@@ -185,7 +185,7 @@ function fmt12(timeStr) {
     if (isNaN(h) || isNaN(mi)) return '--:--';
     const period = h >= 12 ? 'م' : 'ص';
     const h12 = h % 12 || 12;
-    return `${h12}:${pad(mi)}${period}`;
+    return `${h12}:${pad(mi)} ${period}`;
 }
 
 function fmtDur(min) {
@@ -223,7 +223,7 @@ function getNextPrayerInfo(rawTimings = {}, timeZone) {
         }
     }
 
-    return `⏳ القادمة: *${names[nextKey] \vert{}\vert{} 'الفجر'}* بعد ${fmtDur(diffMin)}`;
+    return `⏳ القادمة: *${names[nextKey] || 'الفجر'}* بعد ${fmtDur(diffMin)}`;
 }
 
 function formatTimingsSchedule(rawTimings = {}, timeZone) {
@@ -238,7 +238,7 @@ function formatTimingsSchedule(rawTimings = {}, timeZone) {
 
     const lines = list.map(item => {
         const rawTime = rawTimings?.[item.key] || '';
-        return `${item.icon} ${item.name}:${fmt12(rawTime)}`;
+        return `${item.icon} ${item.name}: ${fmt12(rawTime)}`;
     }).join('\n');
 
     return `${lines}\n\n${getNextPrayerInfo(rawTimings, timeZone)}`;
@@ -380,7 +380,7 @@ function startPrayerCheckLoop(sock) {
                     if (currentTotalMin === eveningAzkarMin && !sentReminders.has(keyEveningAzkar)) {
                         sentReminders.add(keyEveningAzkar);
                         await sock.sendMessage(jid, {
-                            text: ``🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
+                            text: `🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
                         });
                     }
                 }
@@ -399,7 +399,6 @@ function startPrayerCheckLoop(sock) {
 const PHONE_NUMBER = "966551138192";
 
 async function startBot() {
-    // استعادة الجلسة والمشتركين من GitHub فور الإقلاع وقبل كل شيء
     await restoreAuthFromGithub();
     await restoreSubscribersFromGithub();
 
@@ -625,3 +624,4 @@ async function startBot() {
 }
 
 startBot();
+ 
