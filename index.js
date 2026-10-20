@@ -23,7 +23,7 @@ if (RENDER_URL) {
     }, 5 * 60 * 1000);
 }
 
-// ================== 2. إعدادات المتغيرات وقاعدة البيانات ==================
+// ================== 2. إعدادات المتغيرات وقاعدة البيانات والسحابة ==================
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_REPO = "aliquteenah/salaty";
 const GITHUB_FILE_PATH = "prayer_subscribers.json";
@@ -38,15 +38,7 @@ if (!fs.existsSync(AUTH_DIR)) {
 
 let subscribers = {};
 
-try {
-    if (fs.existsSync(SUBSCRIBERS_FILE)) {
-        subscribers = JSON.parse(fs.readFileSync(SUBSCRIBERS_FILE, 'utf8'));
-    }
-} catch (e) {
-    console.log('خطأ في تحميل ملف المشتركين المحلي:', e.message);
-}
-
-// مزامنة أي ملف نصي مع GitHub
+// مزامنة ورفع أي ملف إلى GitHub
 async function syncFileToGithub(repoPath, contentString, commitMessage) {
     if (!GITHUB_TOKEN) return;
     try {
@@ -83,7 +75,31 @@ async function syncFileToGithub(repoPath, contentString, commitMessage) {
     }
 }
 
-// دالة تنزيل بيانات الجلسة من GitHub إن وجدت
+// 1. تنزيل بيانات المشتركين من GitHub عند الإقلاع
+async function restoreSubscribersFromGithub() {
+    if (!GITHUB_TOKEN) return;
+    try {
+        const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/${GITHUB_FILE_PATH}`;
+        const res = await fetch(url, {
+            headers: {
+                "Authorization": `Bearer ${GITHUB_TOKEN}`,
+                "Accept": "application/vnd.github.v3+json"
+            }
+        });
+
+        if (res.ok) {
+            const data = await res.json();
+            const jsonString = Buffer.from(data.content, 'base64').toString('utf8');
+            subscribers = JSON.parse(jsonString);
+            fs.writeFileSync(SUBSCRIBERS_FILE, jsonString, 'utf8');
+            console.log(`✅ تم استرجاع (${Object.keys(subscribers).length}) مشترك من GitHub بنجاح!`);
+        }
+    } catch (e) {
+        console.log("لم يتم العثور على قائمة مشتركون سابقة في GitHub:", e.message);
+    }
+}
+
+// 2. تنزيل بيانات الجلسة من GitHub عند الإقلاع
 async function restoreAuthFromGithub() {
     if (!GITHUB_TOKEN) return;
     try {
@@ -106,11 +122,11 @@ async function restoreAuthFromGithub() {
             console.log("✅ تم استرجاع جلسة الواتساب من GitHub بنجاح!");
         }
     } catch (e) {
-        console.log("لم يتم العثور على جلسة سابقة في GitHub أو تعذر جلبها:", e.message);
+        console.log("تعذر جلب الجلسة من GitHub:", e.message);
     }
 }
 
-// حفظ بيانات الجلسة وسحبها إلى ملف واحد ورفعه
+// حفظ وتحديث الجلسة
 async function saveAndSyncAuth() {
     try {
         if (!fs.existsSync(AUTH_DIR)) return;
@@ -130,6 +146,7 @@ async function saveAndSyncAuth() {
     }
 }
 
+// حفظ وتحديث المشتركين
 async function saveAndSyncSubscribers() {
     const contentString = JSON.stringify(subscribers, null, 2);
     fs.writeFileSync(SUBSCRIBERS_FILE, contentString);
@@ -168,7 +185,7 @@ function fmt12(timeStr) {
     if (isNaN(h) || isNaN(mi)) return '--:--';
     const period = h >= 12 ? 'م' : 'ص';
     const h12 = h % 12 || 12;
-    return `${h12}:${pad(mi)} ${period}`;
+    return `${h12}:${pad(mi)}${period}`;
 }
 
 function fmtDur(min) {
@@ -206,7 +223,7 @@ function getNextPrayerInfo(rawTimings = {}, timeZone) {
         }
     }
 
-    return `⏳ القادمة: *${names[nextKey] || 'الفجر'}* بعد ${fmtDur(diffMin)}`;
+    return `⏳ القادمة: *${names[nextKey] \vert{}\vert{} 'الفجر'}* بعد ${fmtDur(diffMin)}`;
 }
 
 function formatTimingsSchedule(rawTimings = {}, timeZone) {
@@ -221,7 +238,7 @@ function formatTimingsSchedule(rawTimings = {}, timeZone) {
 
     const lines = list.map(item => {
         const rawTime = rawTimings?.[item.key] || '';
-        return `${item.icon} ${item.name}: ${fmt12(rawTime)}`;
+        return `${item.icon} ${item.name}:${fmt12(rawTime)}`;
     }).join('\n');
 
     return `${lines}\n\n${getNextPrayerInfo(rawTimings, timeZone)}`;
@@ -363,7 +380,7 @@ function startPrayerCheckLoop(sock) {
                     if (currentTotalMin === eveningAzkarMin && !sentReminders.has(keyEveningAzkar)) {
                         sentReminders.add(keyEveningAzkar);
                         await sock.sendMessage(jid, {
-                            text: `🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
+                            text: ``🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
                         });
                     }
                 }
@@ -378,12 +395,13 @@ function startPrayerCheckLoop(sock) {
     }, 30 * 1000);
 }
 
-// ================== 5. تشغيل الواتساب والمعالجة مع حفظ الجلسة ==================
+// ================== 5. تشغيل الواتساب والمعالجة الشاملة ==================
 const PHONE_NUMBER = "966551138192";
 
 async function startBot() {
-    // محاولة استعادة الجلسة من GitHub أولاً قبل التشغيل
+    // استعادة الجلسة والمشتركين من GitHub فور الإقلاع وقبل كل شيء
     await restoreAuthFromGithub();
+    await restoreSubscribersFromGithub();
 
     const { version } = await fetchLatestBaileysVersion();
     const { state, saveCreds } = await useMultiFileAuthState('prayer_bot_auth');
@@ -398,7 +416,6 @@ async function startBot() {
         generateHighQualityLinkPreview: false
     });
 
-    // تحديث بيانات الجلسة محلية وسحابية فور كل تغيير
     sock.ev.on('creds.update', async () => {
         await saveCreds();
         await saveAndSyncAuth();
@@ -427,7 +444,7 @@ async function startBot() {
                 setTimeout(startBot, 3000);
             }
         } else if (connection === 'open') {
-            console.log('✅ تم تسجيل الدخول بنجاح! تم حفظ الجلسة وسيتصل البوت تلقائياً في التحديثات القادمة.');
+            console.log('✅ تم تسجيل الدخول بنجاح! تم استرجاع ومزامنة الجلسة والمشتركين مع GitHub.');
             await saveAndSyncAuth();
             startPrayerCheckLoop(sock);
         }
@@ -608,4 +625,3 @@ async function startBot() {
 }
 
 startBot();
- 
