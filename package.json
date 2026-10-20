@@ -1,0 +1,14 @@
+{
+  "name": "whatsapp-prayer-bot",
+  "version": "1.0.0",
+  "description": "WhatsApp Islamic & Prayer Reminder Bot",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.18",
+    "pino": "^9.6.0"
+  }
+}
