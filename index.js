@@ -279,7 +279,9 @@ function startPrayerCheckLoop(sock) {
     }, 30 * 1000);
 }
 
-// ================== 8. تشغيل البوت ==================
+// ================== 8. تشغيل البوت واقتران الواتساب ==================
+const PHONE_NUMBER = "966558513424"; // رقم هاتف البوت المُدرج
+
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('prayer_bot_auth');
 
@@ -291,6 +293,21 @@ async function startBot() {
 
     sock.ev.on('creds.update', saveCreds);
 
+    // طلب كود الاقتران عند عدم تشغيل الجلسة سابقاً
+    if (!sock.authState.creds.registered) {
+        setTimeout(async () => {
+            try {
+                let code = await sock.requestPairingCode(PHONE_NUMBER);
+                code = code?.match(/.{1,4}/g)?.join("-") || code;
+                console.log(`\n==============================================`);
+                console.log(`🔑 كود اقتران الواتساب الخاص بك هو: [ ${code} ]`);
+                console.log(`==============================================\n`);
+            } catch (err) {
+                console.log("خطأ أثناء جلب كود الاقتران:", err.message);
+            }
+        }, 4000);
+    }
+
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
 
@@ -300,7 +317,7 @@ async function startBot() {
                 setTimeout(startBot, 3000);
             }
         } else if (connection === 'open') {
-            console.log('✅ تم تشغيل البوت بنجاح وهو يعمل الآن على مدار 24/7!');
+            console.log('✅ تم اقتران وتسجيل دخول الواتساب بنجاح!');
             startPrayerCheckLoop(sock);
         }
     });
@@ -365,4 +382,3 @@ async function startBot() {
 }
 
 startBot();
- 
