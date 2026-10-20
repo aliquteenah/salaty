@@ -1,10 +1,10 @@
 import express from 'express';
-import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import fs from 'fs';
 import path from 'path';
 
-// ================== 1. خادم Web وميزة منع الخمول (24/7 Keep-Alive) ==================
+// ================== 1. خادم Web وميزة منع الخمول ==================
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -16,7 +16,6 @@ app.listen(PORT, () => {
     console.log(`✅ خادم الويب يعمل على المنفذ: ${PORT}`);
 });
 
-// إرسال طلب ذاتي كل 5 دقائق لمنع Render من إيقاف الخدمة
 const RENDER_URL = process.env.RENDER_EXTERNAL_URL;
 if (RENDER_URL) {
     setInterval(() => {
@@ -44,30 +43,10 @@ const saveSubscribers = () => {
     }
 };
 
-// ================== 3. قوائم الأحاديث والأدعية ==================
+// ================== 3. الأدعية والأحاديث والتوقيت ==================
 const HADITH_LIST = [
-    {
-        hadith: "«إِنَّ الصَّلَاةَ كَانَتْ عَلَى الْمُؤْمِنِينَ كِتَابًا مَوْقُوتًا»",
-        source: "سورة النساء - آية 103"
-    },
-    {
-        hadith: "«بُنِيَ الإِسْلاَمُ عَلَى خَمْسٍ: شَهَادَةِ أَنْ لاَ إِلَهَ إِلاَّ اللَّهُ وَأَنَّ مُحَمَّدًا رَسُولُ اللَّهِ، وَإِقَامِ الصَّلاَةِ، وَإِيتَاءِ الزَّكَاةِ، وَالحَجِّ، وَصَوْمِ رَمَضَانَ»",
-        source: "صحيح البخاري"
-    },
-    {
-        hadith: "سُئِلَ النَّبِيُّ ﷺ: أَيُّ الأَعْمَالِ أَفْضَلُ؟ قَالَ: «الصَّلاَةُ لِوَقْتِهَا»",
-        source: "متفق عليه"
-    },
-    {
-        hadith: "«مَنْ صَلَّى الْبَرْدَيْنِ دَخَلَ الْجَنَّةَ»",
-        source: "صحيح البخاري (البردين: الفجر والعصر)"
-    }
-];
-
-const BETWEEN_AZAN_IQAMA_DUAS = [
-    "«اللَّهُمَّ رَبَّ هَذِهِ الدَّعْوَةِ التَّامَّةِ، وَالصَّلاَةِ الْقَائِمَةِ، آتِ مُحَمَّدًا الْوَسِيلَةَ وَالْفَضِيلَةَ، وَابْعَثْهُ مَقَامًا مَحْمُودًا الَّذِي وَعَدْتَهُ»",
-    "«اللَّهُمَّ إِنِّي أَسْأَلُكَ الْعَفْوَ وَالْعَافِيَةَ فِي الدُّنْيَا وَالآخِرَةِ»",
-    "«رَضِيتُ بِاللَّهِ رَبًّا، وَبِمُحَمَّدٍ رَسُولاً، وَبِالإِسْلاَمِ دِينًا»"
+    { hadith: "«إِنَّ الصَّلَاةَ كَانَتْ عَلَى الْمُؤْمِنِينَ كِتَابًا مَوْقُوتًا»", source: "سورة النساء - آية 103" },
+    { hadith: "«سُئِلَ النَّبِيُّ ﷺ: أَيُّ الأَعْمَالِ أَفْضَلُ؟ قَالَ: الصَّلاَةُ لِوَقْتِهَا»", source: "متفق عليه" }
 ];
 
 function getRandomItem(arr) {
@@ -79,7 +58,6 @@ function getRandomHadith() {
     return `📜 *حديث اليوم:*\n${item.hadith}\n📚 *المصدر:* ${item.source}`;
 }
 
-// ================== 4. تنسيق الوقت وحساب القادمة ==================
 const pad = (n) => String(n).padStart(2, '0');
 
 function fmt12(timeStr) {
@@ -145,25 +123,18 @@ function formatTimingsSchedule(rawTimings = {}, timeZone) {
         return `${item.icon} ${item.name}: ${fmt12(rawTime)}`;
     }).join('\n');
 
-    const nextInfo = getNextPrayerInfo(rawTimings, timeZone);
-
-    return `${lines}\n\n${nextInfo}`;
+    return `${lines}\n\n${getNextPrayerInfo(rawTimings, timeZone)}`;
 }
 
-// ================== 5. التاريخ الهجري والميلادي ==================
 function getFormattedDate(timeZone) {
     const date = new Date();
     const dayName = new Intl.DateTimeFormat('ar-SA', { weekday: 'long', timeZone }).format(date);
     const gregorian = new Intl.DateTimeFormat('ar-EG', { day: 'numeric', month: 'long', year: 'numeric', timeZone }).format(date);
     const hijri = new Intl.DateTimeFormat('ar-SA-u-ca-islamic-umalqura', { day: 'numeric', month: 'numeric', year: 'numeric', timeZone }).format(date);
 
-    return {
-        fullText: `📅 *اليوم:* ${dayName}\n📆 *التاريخ الميلادي:* ${gregorian}\n🌙 *التاريخ الهجري:* ${hijri} هـ`,
-        dayName: dayName
-    };
+    return { fullText: `📅 *اليوم:* ${dayName}\n📆 *التاريخ الميلادي:* ${gregorian}\n🌙 *التاريخ الهجري:* ${hijri} هـ` };
 }
 
-// ================== 6. جلب المواقيت الجغرافية ==================
 async function getJson(url) {
     const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -174,126 +145,35 @@ async function getPlace(cityName) {
     try {
         const j = await getJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityName)}&count=1&language=ar`);
         return j.results?.[0] || null;
-    } catch (e) {
-        return null;
-    }
+    } catch (e) { return null; }
 }
 
 async function getPrayerTimings(lat, lng, timezone) {
     try {
         const j = await getJson(`https://api.aladhan.com/v1/timings?latitude=${lat}&longitude=${lng}&method=4&timezonestring=${encodeURIComponent(timezone)}`);
         return j.data?.timings || null;
-    } catch (e) {
-        return null;
-    }
+    } catch (e) { return null; }
 }
 
-// ================== 7. محرك التنبيهات الدورية ==================
-const sentReminders = new Set();
-
-function startPrayerCheckLoop(sock) {
-    setInterval(async () => {
-        const now = new Date();
-        
-        for (const [jid, info] of Object.entries(subscribers)) {
-            try {
-                const tz = info.timezone;
-                if (!tz) continue;
-
-                const localTimeStr = now.toLocaleTimeString('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
-                const [currH, currM] = localTimeStr.split(':').map(Number);
-                const currentTotalMin = currH * 60 + currM;
-
-                const todayDateStr = now.toLocaleDateString('en-CA', { timeZone: tz });
-                if (!info.rawTimings || info.lastFetchDate !== todayDateStr) {
-                    const newTimings = await getPrayerTimings(info.lat, info.lng, tz);
-                    if (newTimings) {
-                        subscribers[jid].rawTimings = newTimings;
-                        subscribers[jid].lastFetchDate = todayDateStr;
-                        saveSubscribers();
-                    } else {
-                        continue;
-                    }
-                }
-
-                const rawTimings = subscribers[jid].rawTimings;
-                if (!rawTimings) continue;
-
-                const dateObj = getFormattedDate(tz);
-                const hadithText = getRandomHadith();
-
-                const prayersToCheck = [
-                    { name: 'الفجر', key: 'Fajr' },
-                    { name: 'الظهر', key: 'Dhuhr' },
-                    { name: 'العصر', key: 'Asr' },
-                    { name: 'المغرب', key: 'Maghrib' },
-                    { name: 'العشاء', key: 'Isha' }
-                ];
-
-                for (const item of prayersToCheck) {
-                    const prayerName = item.name;
-                    const timeVal = rawTimings[item.key] ? rawTimings[item.key].split(' ')[0] : null;
-                    if (!timeVal) continue;
-
-                    const [pH, pM] = timeVal.split(':').map(Number);
-                    const prayerTotalMin = pH * 60 + pM;
-
-                    // قبل الصلاة بـ 30 دقيقة
-                    const minBefore30 = prayerTotalMin - 30;
-                    const key30 = `${jid}_${todayDateStr}_${prayerName}_30min`;
-                    if (currentTotalMin === minBefore30 && !sentReminders.has(key30)) {
-                        sentReminders.add(key30);
-                        await sock.sendMessage(jid, {
-                            text: `⏳ *تنبيه: قرب صلاة ${prayerName}* 🕌\n\n${dateObj.fullText}\n\nتبقّى 30 دقيقة على أذان صلاة *${prayerName}* في مدينة *${info.cityName}* (${info.country}).\n\n✨ _جهز نفسك للصلاة وتهيأ للوضوء_\n\n───────────────\n${hadithText}`
-                        });
-                    }
-
-                    // عند الأذان
-                    const keyExact = `${jid}_${todayDateStr}_${prayerName}_exact`;
-                    if (currentTotalMin === prayerTotalMin && !sentReminders.has(keyExact)) {
-                        sentReminders.add(keyExact);
-                        await sock.sendMessage(jid, {
-                            text: `🕌 *حان الآن أذان صلاة ${prayerName}* 🌸\n\n${dateObj.fullText}\n\nحان الآن موعد أذان صلاة *${prayerName}* حسب التوقيت المحلي لمدينة *${info.cityName}* (${info.country}).\n\n✨ _حيّ على الصلاة.. حيّ على الفلاح_\n\n───────────────\n${hadithText}`
-                        });
-                    }
-
-                    // بين الأذان والإقامة
-                    const minAfter10 = prayerTotalMin + 10;
-                    const keyIqama = `${jid}_${todayDateStr}_${prayerName}_iqama`;
-                    if (currentTotalMin === minAfter10 && !sentReminders.has(keyIqama)) {
-                        sentReminders.add(keyIqama);
-                        const duaItem = getRandomItem(BETWEEN_AZAN_IQAMA_DUAS);
-                        await sock.sendMessage(jid, {
-                            text: `🤲 *دعاء بين الأذان والإقامة (وقت مستجاب)* 🌟\n\nقال رسول الله ﷺ: «الدُّعَاءُ لاَ يُرَدُّ بَيْنَ الأَذَانِ وَالإِقَامَةِ»\n\n💡 *مِنَ الأَدْعِيَةِ الْمَأْثُورَةِ:*\n${duaItem}\n\n_استغل هذه اللحظات بالدعاء لنفسك ولمن تحب_ 🤍`
-                        });
-                    }
-                }
-
-            } catch (err) {
-                console.log(`خطأ التذكير لـ ${jid}:`, err.message);
-            }
-        }
-
-        if (sentReminders.size > 1000) sentReminders.clear();
-
-    }, 30 * 1000);
-}
-
-// ================== 8. تشغيل البوت واقتران الواتساب ==================
-const PHONE_NUMBER = "966558513424"; // رقم هاتف البوت المُدرج
+// ================== 4. تشغيل الواتساب والمعالجة ==================
+const PHONE_NUMBER = "966558513424";
 
 async function startBot() {
+    const { version } = await fetchLatestBaileysVersion();
     const { state, saveCreds } = await useMultiFileAuthState('prayer_bot_auth');
 
     const sock = makeWASocket({
+        version,
         logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
-        auth: state
+        auth: state,
+        syncFullHistory: false,
+        markOnlineOnConnect: true,
+        generateHighQualityLinkPreview: false
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    // طلب كود الاقتران عند عدم تشغيل الجلسة سابقاً
     if (!sock.authState.creds.registered) {
         setTimeout(async () => {
             try {
@@ -303,44 +183,55 @@ async function startBot() {
                 console.log(`🔑 كود اقتران الواتساب الخاص بك هو: [ ${code} ]`);
                 console.log(`==============================================\n`);
             } catch (err) {
-                console.log("خطأ أثناء جلب كود الاقتران:", err.message);
+                console.log("خطأ كود الاقتران:", err.message);
             }
-        }, 4000);
+        }, 5000);
     }
 
-    sock.ev.on('connection.update', async (update) => {
+    sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect } = update;
-
         if (connection === 'close') {
             const closeCode = lastDisconnect?.error?.output?.statusCode;
+            console.log(`🔴 انقطع الاتصال (الرمز: ${closeCode}). جاري إعادة الاتصال...`);
             if (closeCode !== DisconnectReason.loggedOut) {
                 setTimeout(startBot, 3000);
             }
         } else if (connection === 'open') {
-            console.log('✅ تم اقتران وتسجيل دخول الواتساب بنجاح!');
-            startPrayerCheckLoop(sock);
+            console.log('✅ تم تسجيل الدخول بنجاح البوت جاهز ويستجيب الآن!');
         }
     });
 
-    sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        if (type !== 'notify') return;
-
-        for (const msg of messages) {
-            if (!msg.message) continue;
+    // استلام كافة الرسائل دون استثناء
+    sock.ev.on('messages.upsert', async (m) => {
+        try {
+            const msg = m.messages[0];
+            if (!msg || !msg.message) return;
 
             const targetJid = msg.key.remoteJid;
             const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
             const cleanText = text.toLowerCase();
-            const isFromMe = msg.key.fromMe;
 
-            if (cleanText.startsWith('اشتراك')) {
+            console.log(`📩 رسالة مستلمة من [${targetJid}]: ${text}`);
+
+            // أمر الفحص والتأكد من العمل
+            if (cleanText === 'فحص' || cleanText === 'تست' || cleanText === 'ping') {
+                await sock.sendMessage(targetJid, { text: '✅ البوت شغال ومتصل بنجاح!' }, { quoted: msg });
+            }
+
+            // أمر الاشتراك
+            else if (cleanText.startsWith('اشتراك')) {
                 const cityName = text.replace(/^اشتراك/i, '').trim();
-                if (!cityName) continue;
+                if (!cityName) {
+                    await sock.sendMessage(targetJid, { text: `❌ أرسل اسم المدينة بعد كلمة اشتراك.\nمثال: *اشتراك جازان*` }, { quoted: msg });
+                    return;
+                }
+
+                await sock.sendMessage(targetJid, { text: `⏳ جاري جلب المواقيت لمدينة (${cityName})...` }, { quoted: msg });
 
                 const place = await getPlace(cityName);
                 if (!place) {
                     await sock.sendMessage(targetJid, { text: `❌ لم يتم العثور على المدينة "${cityName}".` }, { quoted: msg });
-                    continue;
+                    return;
                 }
 
                 const tz = place.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -363,12 +254,18 @@ async function startBot() {
                     const timingsSchedule = formatTimingsSchedule(rawTimings, tz);
 
                     await sock.sendMessage(targetJid, {
-                        text: `✅ *تم اشتراكك بنجاح!* ✨\n\n📍 *المدينة:* ${place.name} (${place.country || ''})\n\n${dateObj.fullText}\n\n${timingsSchedule}`
+                        text: `✅ *تم اشتراكك بنجاح!* ✨\n\n📍 *المدينة:* ${place.name} (${place.country || ''})\n\n${dateObj.fullText}\n\n${timingsSchedule}\n\n───────────────\n${getRandomHadith()}`
                     }, { quoted: msg });
                 }
-            } else if (cleanText === 'صلاتي' || cleanText === 'مواقتي') {
+            }
+
+            // أمر صلاتي / مواقتي
+            else if (cleanText === 'صلاتي' || cleanText === 'مواقتي') {
                 const sub = subscribers[targetJid];
-                if (!sub) continue;
+                if (!sub) {
+                    await sock.sendMessage(targetJid, { text: `أنت غير مشترك حالياً. أرسل *اشتراك اسم_المدينة* للتفعيل.` }, { quoted: msg });
+                    return;
+                }
 
                 const dateObj = getFormattedDate(sub.timezone);
                 const timingsSchedule = formatTimingsSchedule(sub.rawTimings || {}, sub.timezone);
@@ -377,8 +274,12 @@ async function startBot() {
                     text: `🕌 *مواقيت الصلاة الخاصة بك* 🌸\n\n📍 *المدينة:* ${sub.cityName} (${sub.country})\n\n${dateObj.fullText}\n\n${timingsSchedule}`
                 }, { quoted: msg });
             }
+
+        } catch (err) {
+            console.log('خطأ معالجة الرسالة:', err.message);
         }
     });
 }
 
 startBot();
+ 
