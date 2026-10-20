@@ -23,30 +23,92 @@ if (RENDER_URL) {
     }, 5 * 60 * 1000);
 }
 
-// ================== 2. إدارة المشتركين ==================
+// ================== 2. إعدادات المتغيرات وقاعدة البيانات ==================
+const MONGO_URI = process.env.MONGO_URI;
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const GITHUB_REPO = "aliquteenah/salaty";
+const GITHUB_FILE_PATH = "prayer_subscribers.json";
+
 const SUBSCRIBERS_FILE = path.join(process.cwd(), 'prayer_subscribers.json');
 let subscribers = {};
 
+// تحميل الملف من الذاكرة المحلية أولاً
 try {
     if (fs.existsSync(SUBSCRIBERS_FILE)) {
         subscribers = JSON.parse(fs.readFileSync(SUBSCRIBERS_FILE, 'utf8'));
     }
 } catch (e) {
-    console.log('خطأ في تحميل ملف المشتركين:', e.message);
+    console.log('خطأ في تحميل ملف المشتركين المحلي:', e.message);
 }
 
-const saveSubscribers = () => {
+// دالة رفع وتحديث ملف المشتركين تلقائياً على GitHub
+async function saveAndSyncSubscribers() {
     try {
-        fs.writeFileSync(SUBSCRIBERS_FILE, JSON.stringify(subscribers, null, 2));
+        const contentString = JSON.stringify(subscribers, null, 2);
+        fs.writeFileSync(SUBSCRIBERS_FILE, contentString);
+
+        if (!GITHUB_TOKEN) {
+            console.log("لم يتم تحديد GITHUB_TOKEN في متغيرات البيئة.");
+            return;
+        }
+
+        const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/${GITHUB_FILE_PATH}`;
+        
+        // 1. جلب SHA الخاص بالملف الحالي في GitHub
+        let sha = null;
+        const getRes = await fetch(url, {
+            headers: {
+                "Authorization": `Bearer ${GITHUB_TOKEN}`,
+                "Accept": "application/vnd.github.v3+json"
+            }
+        });
+
+        if (getRes.ok) {
+            const fileData = await getRes.json();
+            sha = fileData.sha;
+        }
+
+        // 2. تحديث الملف بـ Commit تلقائي
+        const base64Content = Buffer.from(contentString).toString('base64');
+        const bodyData = {
+            message: "🔄 التحديث التلقائي لملف المشتركين",
+            content: base64Content,
+            sha: sha || undefined
+        };
+
+        const putRes = await fetch(url, {
+            method: "PUT",
+            headers: {
+                "Authorization": `Bearer ${GITHUB_TOKEN}`,
+                "Accept": "application/vnd.github.v3+json",
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(bodyData)
+        });
+
+        if (putRes.ok) {
+            console.log("✅ تم تحديث ملف المشتركين تلقائياً على GitHub بنجاح!");
+        } else {
+            const errData = await putRes.json();
+            console.log("فشل مزامنة الملف مع GitHub:", errData.message);
+        }
     } catch (e) {
-        console.log('خطأ في حفظ ملف المشتركين:', e.message);
+        console.log("خطأ أثناء مزامنة المشتركين مع GitHub:", e.message);
     }
-};
+}
 
 // ================== 3. الأدعية والأحاديث والتوقيت ==================
 const HADITH_LIST = [
     { hadith: "«إِنَّ الصَّلَاةَ كَانَتْ عَلَى الْمُؤْمِنِينَ كِتَابًا مَوْقُوتًا»", source: "سورة النساء - آية 103" },
-    { hadith: "«سُئِلَ النَّبِيُّ ﷺ: أَيُّ الأَعْمَالِ أَفْضَلُ؟ قَالَ: الصَّلاَةُ لِوَقْتِهَا»", source: "متفق عليه" }
+    { hadith: "«بُنِيَ الإِسْلاَمُ عَلَى خَمْسٍ: شَهَادَةِ أَنْ لاَ إِلَهَ إِلاَّ اللَّهُ وَأَنَّ مُحَمَّدًا رَسُولُ اللَّهِ، وَإِقَامِ الصَّلاَةِ، وَإِيتَاءِ الزَّكَاةِ، وَالحَجِّ، وَصَوْمِ رَمَضَانَ»", source: "صحيح البخاري" },
+    { hadith: "«سُئِلَ النَّبِيُّ ﷺ: أَيُّ الأَعْمَالِ أَفْضَلُ؟ قَالَ: الصَّلاَةُ لِوَقْتِهَا»", source: "متفق عليه" },
+    { hadith: "«مَنْ صَلَّى الْبَرْدَيْنِ دَخَلَ الْجَنَّةَ»", source: "صحيح البخاري (البردين: الفجر والعصر)" }
+];
+
+const BETWEEN_AZAN_IQAMA_DUAS = [
+    "«اللَّهُمَّ رَبَّ هَذِهِ الدَّعْوَةِ التَّامَّةِ، وَالصَّلاَةِ الْقَائِمَةِ، آتِ مُحَمَّدًا الْوَسِيلَةَ وَالْفَضِيلَةَ، وَابْعَثْهُ مَقَامًا مَحْمُودًا الَّذِي وَعَدْتَهُ»",
+    "«اللَّهُمَّ إِنِّي أَسْأَلُكَ الْعَفْوَ وَالْعَافِيَةَ فِي الدُّنْيَا وَالآخِرَةِ»",
+    "«رَضِيتُ بِاللَّهِ رَبًّا، وَبِمُحَمَّدٍ رَسُولاً، وَبِالإِسْلاَمِ دِينًا»"
 ];
 
 function getRandomItem(arr) {
@@ -132,7 +194,7 @@ function getFormattedDate(timeZone) {
     const gregorian = new Intl.DateTimeFormat('ar-EG', { day: 'numeric', month: 'long', year: 'numeric', timeZone }).format(date);
     const hijri = new Intl.DateTimeFormat('ar-SA-u-ca-islamic-umalqura', { day: 'numeric', month: 'numeric', year: 'numeric', timeZone }).format(date);
 
-    return { fullText: `📅 *اليوم:* ${dayName}\n📆 *التاريخ الميلادي:* ${gregorian}\n🌙 *التاريخ الهجري:* ${hijri} هـ` };
+    return { fullText: `📅 *اليوم:* ${dayName}\n📆 *التاريخ الميلادي:* ${gregorian}\n🌙 *التاريخ الهجري:* ${hijri} هـ`, dayName: dayName };
 }
 
 async function getJson(url) {
@@ -155,8 +217,125 @@ async function getPrayerTimings(lat, lng, timezone) {
     } catch (e) { return null; }
 }
 
-// ================== 4. تشغيل الواتساب والمعالجة ==================
-const PHONE_NUMBER = "966558513424";
+// ================== 4. محرك التنبيهات الدورية ==================
+const sentReminders = new Set();
+
+function startPrayerCheckLoop(sock) {
+    setInterval(async () => {
+        const now = new Date();
+        
+        for (const [jid, info] of Object.entries(subscribers)) {
+            try {
+                const tz = info.timezone;
+                if (!tz) continue;
+
+                const localTimeStr = now.toLocaleTimeString('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+                const [currH, currM] = localTimeStr.split(':').map(Number);
+                const currentTotalMin = currH * 60 + currM;
+
+                const todayDateStr = now.toLocaleDateString('en-CA', { timeZone: tz });
+                if (!info.rawTimings || info.lastFetchDate !== todayDateStr) {
+                    const newTimings = await getPrayerTimings(info.lat, info.lng, tz);
+                    if (newTimings) {
+                        subscribers[jid].rawTimings = newTimings;
+                        subscribers[jid].lastFetchDate = todayDateStr;
+                        await saveAndSyncSubscribers();
+                    } else {
+                        continue;
+                    }
+                }
+
+                const rawTimings = subscribers[jid].rawTimings;
+                if (!rawTimings) continue;
+
+                const dateObj = getFormattedDate(tz);
+                const hadithText = getRandomHadith();
+
+                const prayersToCheck = [
+                    { name: 'الفجر', key: 'Fajr' },
+                    { name: 'الظهر', key: 'Dhuhr' },
+                    { name: 'العصر', key: 'Asr' },
+                    { name: 'المغرب', key: 'Maghrib' },
+                    { name: 'العشاء', key: 'Isha' }
+                ];
+
+                for (const item of prayersToCheck) {
+                    const prayerName = item.name;
+                    const timeVal = rawTimings[item.key] ? rawTimings[item.key].split(' ')[0] : null;
+                    if (!timeVal) continue;
+
+                    const [pH, pM] = timeVal.split(':').map(Number);
+                    const prayerTotalMin = pH * 60 + pM;
+
+                    // قبل الصلاة بـ 30 دقيقة
+                    const minBefore30 = prayerTotalMin - 30;
+                    const key30 = `${jid}_${todayDateStr}_${prayerName}_30min`;
+                    if (currentTotalMin === minBefore30 && !sentReminders.has(key30)) {
+                        sentReminders.add(key30);
+                        await sock.sendMessage(jid, {
+                            text: `⏳ *تنبيه: قرب صلاة ${prayerName}* 🕌\n\n${dateObj.fullText}\n\nتبقّى 30 دقيقة على أذان صلاة *${prayerName}* في مدينة *${info.cityName}* (${info.country}).\n\n✨ _جهز نفسك للصلاة وتهيأ للوضوء_\n\n───────────────\n${hadithText}`
+                        });
+                    }
+
+                    // عند الأذان
+                    const keyExact = `${jid}_${todayDateStr}_${prayerName}_exact`;
+                    if (currentTotalMin === prayerTotalMin && !sentReminders.has(keyExact)) {
+                        sentReminders.add(keyExact);
+                        await sock.sendMessage(jid, {
+                            text: `🕌 *حان الآن أذان صلاة ${prayerName}* 🌸\n\n${dateObj.fullText}\n\nحان الآن موعد أذان صلاة *${prayerName}* حسب التوقيت المحلي لمدينة *${info.cityName}* (${info.country}).\n\n✨ _حيّ على الصلاة.. حيّ على الفلاح_\n\n───────────────\n${hadithText}`
+                        });
+                    }
+
+                    // بين الأذان والإقامة
+                    const minAfter10 = prayerTotalMin + 10;
+                    const keyIqama = `${jid}_${todayDateStr}_${prayerName}_iqama`;
+                    if (currentTotalMin === minAfter10 && !sentReminders.has(keyIqama)) {
+                        sentReminders.add(keyIqama);
+                        const duaItem = getRandomItem(BETWEEN_AZAN_IQAMA_DUAS);
+                        await sock.sendMessage(jid, {
+                            text: `🤲 *دعاء بين الأذان والإقامة (وقت مستجاب)* 🌟\n\nقال رسول الله ﷺ: «الدُّعَاءُ لاَ يُرَدُّ بَيْنَ الأَذَانِ وَالإِقَامَةِ»\n\n💡 *مِنَ الأَدْعِيَةِ الْمَأْثُورَةِ:*\n${duaItem}\n\n_استغل هذه اللحظات بالدعاء لنفسك ولمن تحب_ 🤍`
+                        });
+                    }
+                }
+
+                // أذكار الصباح (بعد الفجر بـ 20 دقيقة)
+                if (rawTimings['Fajr']) {
+                    const [fH, fM] = rawTimings['Fajr'].split(' ')[0].split(':').map(Number);
+                    const morningAzkarMin = fH * 60 + fM + 20;
+                    const keyMorningAzkar = `${jid}_${todayDateStr}_morning_azkar`;
+                    if (currentTotalMin === morningAzkarMin && !sentReminders.has(keyMorningAzkar)) {
+                        sentReminders.add(keyMorningAzkar);
+                        await sock.sendMessage(jid, {
+                            text: `🌅 *تذكير بأذكار الصباح* 🌸\n\nاصبحنا واصبح الملك لله والحمد لله.. لا تنسَ قراءة أذكار الصباح لتحفظك وتنوّر يومك ✨\n\n«أَلا بِذِكْرِ اللَّهِ تَطْمَئِنُّ الْقُلُوبُ»`
+                        });
+                    }
+                }
+
+                // أذكار المساء (بعد العصر بـ 20 دقيقة)
+                if (rawTimings['Asr']) {
+                    const [aH, aM] = rawTimings['Asr'].split(' ')[0].split(':').map(Number);
+                    const eveningAzkarMin = aH * 60 + aM + 20;
+                    const keyEveningAzkar = `${jid}_${todayDateStr}_evening_azkar`;
+                    if (currentTotalMin === eveningAzkarMin && !sentReminders.has(keyEveningAzkar)) {
+                        sentReminders.add(keyEveningAzkar);
+                        await sock.sendMessage(jid, {
+                            text: `🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
+                        });
+                    }
+                }
+
+            } catch (err) {
+                console.log(`خطأ التذكير لـ ${jid}:`, err.message);
+            }
+        }
+
+        if (sentReminders.size > 1000) sentReminders.clear();
+
+    }, 30 * 1000);
+}
+
+// ================== 5. تشغيل الواتساب برقم الواتساب الجديد ==================
+const PHONE_NUMBER = "966551138192";
 
 async function startBot() {
     const { version } = await fetchLatestBaileysVersion();
@@ -180,7 +359,7 @@ async function startBot() {
                 let code = await sock.requestPairingCode(PHONE_NUMBER);
                 code = code?.match(/.{1,4}/g)?.join("-") || code;
                 console.log(`\n==============================================`);
-                console.log(`🔑 كود اقتران الواتساب الخاص بك هو: [ ${code} ]`);
+                console.log(`🔑 كود اقتران الواتساب للرقم الجديد هو: [ ${code} ]`);
                 console.log(`==============================================\n`);
             } catch (err) {
                 console.log("خطأ كود الاقتران:", err.message);
@@ -197,11 +376,11 @@ async function startBot() {
                 setTimeout(startBot, 3000);
             }
         } else if (connection === 'open') {
-            console.log('✅ تم تسجيل الدخول بنجاح البوت جاهز ويستجيب الآن!');
+            console.log('✅ تم تسجيل الدخول بنجاح للرقم الجديد! جميع الأوامر ومزامنة المشتركين تعمل.');
+            startPrayerCheckLoop(sock);
         }
     });
 
-    // استلام كافة الرسائل دون استثناء
     sock.ev.on('messages.upsert', async (m) => {
         try {
             const msg = m.messages[0];
@@ -210,19 +389,13 @@ async function startBot() {
             const targetJid = msg.key.remoteJid;
             const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
             const cleanText = text.toLowerCase();
+            const isFromMe = msg.key.fromMe;
 
-            console.log(`📩 رسالة مستلمة من [${targetJid}]: ${text}`);
-
-            // أمر الفحص والتأكد من العمل
-            if (cleanText === 'فحص' || cleanText === 'تست' || cleanText === 'ping') {
-                await sock.sendMessage(targetJid, { text: '✅ البوت شغال ومتصل بنجاح!' }, { quoted: msg });
-            }
-
-            // أمر الاشتراك
-            else if (cleanText.startsWith('اشتراك')) {
+            // 1. أمر الاشتراك
+            if (cleanText.startsWith('اشتراك')) {
                 const cityName = text.replace(/^اشتراك/i, '').trim();
                 if (!cityName) {
-                    await sock.sendMessage(targetJid, { text: `❌ أرسل اسم المدينة بعد كلمة اشتراك.\nمثال: *اشتراك جازان*` }, { quoted: msg });
+                    await sock.sendMessage(targetJid, { text: `❌ يرجى كتابة اسم المدينة بعد كلمة اشتراك.\nمثال: *اشتراك جازان*` }, { quoted: msg });
                     return;
                 }
 
@@ -248,7 +421,7 @@ async function startBot() {
                         rawTimings: rawTimings,
                         lastFetchDate: todayDateStr
                     };
-                    saveSubscribers();
+                    await saveAndSyncSubscribers();
 
                     const dateObj = getFormattedDate(tz);
                     const timingsSchedule = formatTimingsSchedule(rawTimings, tz);
@@ -259,7 +432,41 @@ async function startBot() {
                 }
             }
 
-            // أمر صلاتي / مواقتي
+            // 2. أمر تعديل المدينة
+            else if (cleanText.startsWith('تعديل') || cleanText.startsWith('تغيير')) {
+                const newCity = text.replace(/^(تعديل|تغيير)/i, '').trim();
+                if (!newCity) {
+                    await sock.sendMessage(targetJid, { text: `❌ يرجى كتابة اسم المدينة الجديد بعد الأمر.\nمثال: *تعديل جازان*` }, { quoted: msg });
+                    return;
+                }
+
+                const place = await getPlace(newCity);
+                if (!place) {
+                    await sock.sendMessage(targetJid, { text: `❌ لم يتم العثور على المدينة "${newCity}".` }, { quoted: msg });
+                    return;
+                }
+
+                const tz = place.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+                const rawTimings = await getPrayerTimings(place.latitude, place.longitude, tz);
+
+                if (rawTimings) {
+                    const todayDateStr = new Date().toLocaleDateString('en-CA', { timeZone: tz });
+                    subscribers[targetJid] = {
+                        cityName: place.name,
+                        country: place.country || '',
+                        lat: place.latitude,
+                        lng: place.longitude,
+                        timezone: tz,
+                        rawTimings: rawTimings,
+                        lastFetchDate: todayDateStr
+                    };
+                    await saveAndSyncSubscribers();
+
+                    await sock.sendMessage(targetJid, { text: `✅ *تم تعديل مدينتك بنجاح إلى (${place.name} - ${place.country || ''})!* 🔄` }, { quoted: msg });
+                }
+            }
+
+            // 3. أمر صلاتي / مواقتي
             else if (cleanText === 'صلاتي' || cleanText === 'مواقتي') {
                 const sub = subscribers[targetJid];
                 if (!sub) {
@@ -275,6 +482,73 @@ async function startBot() {
                 }, { quoted: msg });
             }
 
+            // 4. أمر إلغاء الاشتراك
+            else if (cleanText === 'إلغاء الاشتراك' || cleanText === 'الغاء الاشتراك' || cleanText === 'إلغاء اشتراك' || cleanText === 'الغاء اشتراك') {
+                if (subscribers[targetJid]) {
+                    delete subscribers[targetJid];
+                    await saveAndSyncSubscribers();
+                    await sock.sendMessage(targetJid, { text: `🛑 *تم إلغاء اشتراكك في خدمة أوقات الصلاة بنجاح.*` }, { quoted: msg });
+                } else {
+                    await sock.sendMessage(targetJid, { text: `أنت غير مشترك في الخدمة حالياً.` }, { quoted: msg });
+                }
+            }
+
+            // 5. أمر المساعدة والأوامر
+            else if (cleanText === '.مساعدة' || cleanText === 'مساعدة' || cleanText === 'اوامر' || cleanText === 'الأوامر') {
+                await sock.sendMessage(targetJid, {
+                    text: `🕌 *بوت التذكير والإشعار الإسلامي الشامل*\n\n• *اشتراك اسم_المدينة* ➔ الاشتراك بمدينة معينة (مثال: اشتراك جازان).\n• *صلاتي* أو *مواقتي* ➔ عرض مواقيت اليوم والتاريخ لمدينتك والصلاة القادمة.\n• *تعديل اسم_المدينة* ➔ تغيير مدينتك بسهولة.\n• *إلغاء الاشتراك* ➔ لإيقاف استقبال التذكيرات.\n• *فحص* ➔ للتأكد من جاهزية واستجابة البوت.\n\n⚙️ *أوامر المطور:* \n• *.الاحصائيات* ➔ عرض عدد المشتركين والمدن.\n• *.اذاعة النص* ➔ إرسال رسالة لكل المشتركين.`
+                }, { quoted: msg });
+            }
+
+            // 6. أمر فحص الاستجابة
+            else if (cleanText === 'فحص' || cleanText === 'تست' || cleanText === 'ping') {
+                await sock.sendMessage(targetJid, { text: `✅ البوت شغال ومتصل بنجاح على منصة Render ومربوط بالسحابة!` }, { quoted: msg });
+            }
+
+            // 7. أمر الإحصائيات
+            else if (cleanText === '.الاحصائيات' || cleanText === 'الاحصائيات' || cleanText === '.إحصائيات') {
+                if (!isFromMe) return;
+
+                const count = Object.keys(subscribers).length;
+                const citiesCount = {};
+
+                for (const sub of Object.values(subscribers)) {
+                    citiesCount[sub.cityName] = (citiesCount[sub.cityName] || 0) + 1;
+                }
+
+                let cityDetails = Object.entries(citiesCount)
+                    .map(([c, n]) => `• ${c}: ${n} مشترك`)
+                    .join('\n');
+
+                await sock.sendMessage(targetJid, {
+                    text: `📊 *إحصائيات البوت:* \n\n👥 *إجمالي المشتركين:* ${count}\n\n📍 *التوزيع حسب المدن:*\n${cityDetails || 'لا يوجد مشتركين حتى الآن'}`
+                }, { quoted: msg });
+            }
+
+            // 8. أمر الإذاعة العامة
+            else if (cleanText.startsWith('.اذاعة') || cleanText.startsWith('اذاعة')) {
+                if (!isFromMe) return;
+
+                const broadcastText = text.replace(/^(\.اذاعة|اذاعة)/i, '').trim();
+                if (!broadcastText) {
+                    await sock.sendMessage(targetJid, { text: `❌ يرجى كتابة نص الإذاعة بعد الأمر.` }, { quoted: msg });
+                    return;
+                }
+
+                const allJids = Object.keys(subscribers);
+                await sock.sendMessage(targetJid, { text: `📢 جاري بدء الإذاعة لـ (${allJids.length}) مشترك...` }, { quoted: msg });
+
+                let success = 0;
+                for (const jid of allJids) {
+                    try {
+                        await sock.sendMessage(jid, { text: `📢 *تنويه هام من إدارة البوت:*\n\n${broadcastText}` });
+                        success++;
+                    } catch (e) {}
+                }
+
+                await sock.sendMessage(targetJid, { text: `✅ تم إرسال الإذاعة بنجاح إلى (${success}/${allJids.length}) مشترك.` }, { quoted: msg });
+            }
+
         } catch (err) {
             console.log('خطأ معالجة الرسالة:', err.message);
         }
@@ -282,4 +556,3 @@ async function startBot() {
 }
 
 startBot();
- 
