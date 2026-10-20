@@ -54,7 +54,6 @@ async function saveAndSyncSubscribers() {
 
         const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/${GITHUB_FILE_PATH}`;
         
-        // 1. جلب SHA الخاص بالملف الحالي في GitHub
         let sha = null;
         const getRes = await fetch(url, {
             headers: {
@@ -68,7 +67,6 @@ async function saveAndSyncSubscribers() {
             sha = fileData.sha;
         }
 
-        // 2. تحديث الملف بـ Commit تلقائي
         const base64Content = Buffer.from(contentString).toString('base64');
         const bodyData = {
             message: "🔄 التحديث التلقائي لملف المشتركين",
@@ -203,11 +201,18 @@ async function getJson(url) {
     return res.json();
 }
 
+// دالة جلب المدينة المحدثة لترجيح العواصم والمدن الكبرى (كحل لمشكلة الخرطوم)
 async function getPlace(cityName) {
     try {
-        const j = await getJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityName)}&count=1&language=ar`);
-        return j.results?.[0] || null;
-    } catch (e) { return null; }
+        const j = await getJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityName)}&count=5&language=ar`);
+        if (!j.results || j.results.length === 0) return null;
+        
+        // تفضيل العاصمة أو المدينة الرئيسية إن وجدت بين النتائج
+        const exactMatch = j.results.find(r => r.feature_code && r.feature_code.startsWith('PPLC')) || j.results[0];
+        return exactMatch;
+    } catch (e) { 
+        return null; 
+    }
 }
 
 async function getPrayerTimings(lat, lng, timezone) {
@@ -334,7 +339,7 @@ function startPrayerCheckLoop(sock) {
     }, 30 * 1000);
 }
 
-// ================== 5. تشغيل الواتساب برقم الواتساب الجديد ==================
+// ================== 5. تشغيل الواتساب والمعالجة ==================
 const PHONE_NUMBER = "966551138192";
 
 async function startBot() {
@@ -359,7 +364,7 @@ async function startBot() {
                 let code = await sock.requestPairingCode(PHONE_NUMBER);
                 code = code?.match(/.{1,4}/g)?.join("-") || code;
                 console.log(`\n==============================================`);
-                console.log(`🔑 كود اقتران الواتساب للرقم الجديد هو: [ ${code} ]`);
+                console.log(`🔑 كود اقتران الواتساب الخاص بك هو: [ ${code} ]`);
                 console.log(`==============================================\n`);
             } catch (err) {
                 console.log("خطأ كود الاقتران:", err.message);
@@ -376,7 +381,7 @@ async function startBot() {
                 setTimeout(startBot, 3000);
             }
         } else if (connection === 'open') {
-            console.log('✅ تم تسجيل الدخول بنجاح للرقم الجديد! جميع الأوامر ومزامنة المشتركين تعمل.');
+            console.log('✅ تم تسجيل الدخول بنجاح! البوت متصل ويستجيب بنجاح.');
             startPrayerCheckLoop(sock);
         }
     });
