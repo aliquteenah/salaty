@@ -1,0 +1,4 @@
+node_modules
+prayer_bot_auth
+prayer_subscribers.json
+.env
