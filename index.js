@@ -24,15 +24,20 @@ if (RENDER_URL) {
 }
 
 // ================== 2. إعدادات المتغيرات وقاعدة البيانات ==================
-const MONGO_URI = process.env.MONGO_URI;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_REPO = "aliquteenah/salaty";
 const GITHUB_FILE_PATH = "prayer_subscribers.json";
+const AUTH_FILE_PATH = "prayer_bot_auth.json";
 
 const SUBSCRIBERS_FILE = path.join(process.cwd(), 'prayer_subscribers.json');
+const AUTH_DIR = path.join(process.cwd(), 'prayer_bot_auth');
+
+if (!fs.existsSync(AUTH_DIR)) {
+    fs.mkdirSync(AUTH_DIR, { recursive: true });
+}
+
 let subscribers = {};
 
-// تحميل الملف من الذاكرة المحلية أولاً
 try {
     if (fs.existsSync(SUBSCRIBERS_FILE)) {
         subscribers = JSON.parse(fs.readFileSync(SUBSCRIBERS_FILE, 'utf8'));
@@ -41,19 +46,11 @@ try {
     console.log('خطأ في تحميل ملف المشتركين المحلي:', e.message);
 }
 
-// دالة رفع وتحديث ملف المشتركين تلقائياً على GitHub
-async function saveAndSyncSubscribers() {
+// مزامنة أي ملف نصي مع GitHub
+async function syncFileToGithub(repoPath, contentString, commitMessage) {
+    if (!GITHUB_TOKEN) return;
     try {
-        const contentString = JSON.stringify(subscribers, null, 2);
-        fs.writeFileSync(SUBSCRIBERS_FILE, contentString);
-
-        if (!GITHUB_TOKEN) {
-            console.log("لم يتم تحديد GITHUB_TOKEN في متغيرات البيئة.");
-            return;
-        }
-
-        const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/${GITHUB_FILE_PATH}`;
-        
+        const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/${repoPath}`;
         let sha = null;
         const getRes = await fetch(url, {
             headers: {
@@ -68,31 +65,75 @@ async function saveAndSyncSubscribers() {
         }
 
         const base64Content = Buffer.from(contentString).toString('base64');
-        const bodyData = {
-            message: "🔄 التحديث التلقائي لملف المشتركين",
-            content: base64Content,
-            sha: sha || undefined
-        };
-
-        const putRes = await fetch(url, {
+        await fetch(url, {
             method: "PUT",
             headers: {
                 "Authorization": `Bearer ${GITHUB_TOKEN}`,
                 "Accept": "application/vnd.github.v3+json",
                 "Content-Type": "application/json"
             },
-            body: JSON.stringify(bodyData)
+            body: JSON.stringify({
+                message: commitMessage,
+                content: base64Content,
+                sha: sha || undefined
+            })
+        });
+    } catch (e) {
+        console.log(`خطأ المزامنة مع GitHub (${repoPath}):`, e.message);
+    }
+}
+
+// دالة تنزيل بيانات الجلسة من GitHub إن وجدت
+async function restoreAuthFromGithub() {
+    if (!GITHUB_TOKEN) return;
+    try {
+        const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/${AUTH_FILE_PATH}`;
+        const res = await fetch(url, {
+            headers: {
+                "Authorization": `Bearer ${GITHUB_TOKEN}`,
+                "Accept": "application/vnd.github.v3+json"
+            }
         });
 
-        if (putRes.ok) {
-            console.log("✅ تم تحديث ملف المشتركين تلقائياً على GitHub بنجاح!");
-        } else {
-            const errData = await putRes.json();
-            console.log("فشل مزامنة الملف مع GitHub:", errData.message);
+        if (res.ok) {
+            const data = await res.json();
+            const jsonString = Buffer.from(data.content, 'base64').toString('utf8');
+            const authFiles = JSON.parse(jsonString);
+
+            for (const [filename, content] of Object.entries(authFiles)) {
+                fs.writeFileSync(path.join(AUTH_DIR, filename), content, 'utf8');
+            }
+            console.log("✅ تم استرجاع جلسة الواتساب من GitHub بنجاح!");
         }
     } catch (e) {
-        console.log("خطأ أثناء مزامنة المشتركين مع GitHub:", e.message);
+        console.log("لم يتم العثور على جلسة سابقة في GitHub أو تعذر جلبها:", e.message);
     }
+}
+
+// حفظ بيانات الجلسة وسحبها إلى ملف واحد ورفعه
+async function saveAndSyncAuth() {
+    try {
+        if (!fs.existsSync(AUTH_DIR)) return;
+        const files = fs.readdirSync(AUTH_DIR);
+        const authData = {};
+
+        for (const file of files) {
+            const filePath = path.join(AUTH_DIR, file);
+            if (fs.statSync(filePath).isFile()) {
+                authData[file] = fs.readFileSync(filePath, 'utf8');
+            }
+        }
+
+        await syncFileToGithub(AUTH_FILE_PATH, JSON.stringify(authData), "🔑 حفظ وتحديث جلسة الواتساب");
+    } catch (e) {
+        console.log("خطأ حفظ الجلسة على GitHub:", e.message);
+    }
+}
+
+async function saveAndSyncSubscribers() {
+    const contentString = JSON.stringify(subscribers, null, 2);
+    fs.writeFileSync(SUBSCRIBERS_FILE, contentString);
+    await syncFileToGithub(GITHUB_FILE_PATH, contentString, "🔄 التحديث التلقائي لملف المشتركين");
 }
 
 // ================== 3. الأدعية والأحاديث والتوقيت ==================
@@ -201,13 +242,11 @@ async function getJson(url) {
     return res.json();
 }
 
-// دالة جلب المدينة المحدثة لترجيح العواصم والمدن الكبرى (كحل لمشكلة الخرطوم)
 async function getPlace(cityName) {
     try {
         const j = await getJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityName)}&count=5&language=ar`);
         if (!j.results || j.results.length === 0) return null;
         
-        // تفضيل العاصمة أو المدينة الرئيسية إن وجدت بين النتائج
         const exactMatch = j.results.find(r => r.feature_code && r.feature_code.startsWith('PPLC')) || j.results[0];
         return exactMatch;
     } catch (e) { 
@@ -339,10 +378,13 @@ function startPrayerCheckLoop(sock) {
     }, 30 * 1000);
 }
 
-// ================== 5. تشغيل الواتساب والمعالجة ==================
+// ================== 5. تشغيل الواتساب والمعالجة مع حفظ الجلسة ==================
 const PHONE_NUMBER = "966551138192";
 
 async function startBot() {
+    // محاولة استعادة الجلسة من GitHub أولاً قبل التشغيل
+    await restoreAuthFromGithub();
+
     const { version } = await fetchLatestBaileysVersion();
     const { state, saveCreds } = await useMultiFileAuthState('prayer_bot_auth');
 
@@ -356,7 +398,11 @@ async function startBot() {
         generateHighQualityLinkPreview: false
     });
 
-    sock.ev.on('creds.update', saveCreds);
+    // تحديث بيانات الجلسة محلية وسحابية فور كل تغيير
+    sock.ev.on('creds.update', async () => {
+        await saveCreds();
+        await saveAndSyncAuth();
+    });
 
     if (!sock.authState.creds.registered) {
         setTimeout(async () => {
@@ -372,7 +418,7 @@ async function startBot() {
         }, 5000);
     }
 
-    sock.ev.on('connection.update', (update) => {
+    sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
         if (connection === 'close') {
             const closeCode = lastDisconnect?.error?.output?.statusCode;
@@ -381,7 +427,8 @@ async function startBot() {
                 setTimeout(startBot, 3000);
             }
         } else if (connection === 'open') {
-            console.log('✅ تم تسجيل الدخول بنجاح! البوت متصل ويستجيب بنجاح.');
+            console.log('✅ تم تسجيل الدخول بنجاح! تم حفظ الجلسة وسيتصل البوت تلقائياً في التحديثات القادمة.');
+            await saveAndSyncAuth();
             startPrayerCheckLoop(sock);
         }
     });
@@ -561,3 +608,4 @@ async function startBot() {
 }
 
 startBot();
+ 
