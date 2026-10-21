@@ -27,7 +27,7 @@ if (RENDER_URL) {
 
 // ================== 2. إعداد وقاعدة بيانات Firebase ==================
 const firebaseConfig = {
-    databaseURL: "[https://salaty-ed58a-default-rtdb.firebaseio.com](https://salaty-ed58a-default-rtdb.firebaseio.com)"
+    databaseURL: "https://salaty-ed58a-default-rtdb.firebaseio.com"
 };
 
 const firebaseApp = initializeApp(firebaseConfig);
@@ -41,7 +41,6 @@ if (!fs.existsSync(AUTH_DIR)) {
 let subscribers = {};
 let hadithSubscribers = {};
 
-// 1. استرجاع البيانات من Firebase عند الإقلاع
 async function restoreSubscribersFromFirebase() {
     try {
         const dbRef = ref(db);
@@ -61,7 +60,6 @@ async function restoreSubscribersFromFirebase() {
     }
 }
 
-// 2. حفظ وتحديث المشتركين في Firebase
 async function saveSubscribersToFirebase() {
     try {
         await set(ref(db, 'subscribers'), subscribers);
@@ -71,7 +69,6 @@ async function saveSubscribersToFirebase() {
     }
 }
 
-// 3. استرجاع الجلسة من Firebase عند الإقلاع
 async function restoreAuthFromFirebase() {
     try {
         const dbRef = ref(db);
@@ -93,7 +90,6 @@ async function restoreAuthFromFirebase() {
     }
 }
 
-// 4. حفظ وتحديث ملفات الجلسة في Firebase
 async function saveAuthToFirebase() {
     try {
         if (!fs.existsSync(AUTH_DIR)) return;
@@ -137,7 +133,7 @@ async function getRandomHadith() {
         const categories = [2, 3, 4, 5]; 
         const randomCat = getRandomItem(categories);
 
-        const res = await fetch(`[https://hadeethenc.com/api/v1/hadeeths/list/?language=ar&category_id=$](https://hadeethenc.com/api/v1/hadeeths/list/?language=ar&category_id=$){randomCat}&page=1&per_page=20`, {
+        const res = await fetch(`https://hadeethenc.com/api/v1/hadeeths/list/?language=ar&category_id=${randomCat}&page=1&per_page=20`, {
             signal: AbortSignal.timeout(5000)
         });
 
@@ -146,7 +142,7 @@ async function getRandomHadith() {
             if (data && data.data && data.data.length > 0) {
                 const randomItem = getRandomItem(data.data);
                 
-                const detailRes = await fetch(`[https://hadeethenc.com/api/v1/hadeeths/one/?language=ar&id=$](https://hadeethenc.com/api/v1/hadeeths/one/?language=ar&id=$){randomItem.id}`, {
+                const detailRes = await fetch(`https://hadeethenc.com/api/v1/hadeeths/one/?language=ar&id=${randomItem.id}`, {
                     signal: AbortSignal.timeout(5000)
                 });
 
@@ -175,7 +171,7 @@ async function getHadithWithExplanationOnly() {
         const categories = [2, 3, 4, 5];
         const randomCat = getRandomItem(categories);
 
-        const res = await fetch(`[https://hadeethenc.com/api/v1/hadeeths/list/?language=ar&category_id=$](https://hadeethenc.com/api/v1/hadeeths/list/?language=ar&category_id=$){randomCat}&page=1&per_page=25`, {
+        const res = await fetch(`https://hadeethenc.com/api/v1/hadeeths/list/?language=ar&category_id=${randomCat}&page=1&per_page=25`, {
             signal: AbortSignal.timeout(5000)
         });
 
@@ -184,7 +180,7 @@ async function getHadithWithExplanationOnly() {
             if (data && data.data && data.data.length > 0) {
                 const randomItem = getRandomItem(data.data);
 
-                const detailRes = await fetch(`[https://hadeethenc.com/api/v1/hadeeths/one/?language=ar&id=$](https://hadeethenc.com/api/v1/hadeeths/one/?language=ar&id=$){randomItem.id}`, {
+                const detailRes = await fetch(`https://hadeethenc.com/api/v1/hadeeths/one/?language=ar&id=${randomItem.id}`, {
                     signal: AbortSignal.timeout(5000)
                 });
 
@@ -214,7 +210,7 @@ function fmt12(timeStr) {
     if (isNaN(h) || isNaN(mi)) return '--:--';
     const period = h >= 12 ? 'م' : 'ص';
     const h12 = h % 12 || 12;
-    return `${h12}:${pad(mi)} ${period}`;
+    return `${h12}:${pad(mi)}${period}`;
 }
 
 function fmtDur(min) {
@@ -268,7 +264,7 @@ function formatTimingsSchedule(rawTimings = {}, timeZone) {
 
     const lines = list.map(item => {
         const rawTime = rawTimings?.[item.key] || '';
-        return `${item.icon} ${item.name}: ${fmt12(rawTime)}`;
+        return `${item.icon} ${item.name}:${fmt12(rawTime)}`;
     }).join('\n');
 
     return `${lines}\n\n${getNextPrayerInfo(rawTimings, timeZone)}`;
@@ -293,6 +289,7 @@ async function getPlace(cityName) {
     try {
         const cleanName = cityName.trim().toLowerCase();
 
+        // حل صريح لمنع خطأ الخرطوم
         const knownCities = {
             'الخرطوم': { name: 'الخرطوم', country: 'السودان', latitude: 15.5007, longitude: 32.5599, timezone: 'Africa/Khartoum' },
             'خرطوم': { name: 'الخرطوم', country: 'السودان', latitude: 15.5007, longitude: 32.5599, timezone: 'Africa/Khartoum' },
@@ -303,9 +300,10 @@ async function getPlace(cityName) {
             return knownCities[cleanName];
         }
 
-        const j = await getJson(`[https://geocoding-api.open-meteo.com/v1/search?name=$](https://geocoding-api.open-meteo.com/v1/search?name=$){encodeURIComponent(cityName)}&count=10&language=ar`);
+        const j = await getJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityName)}&count=10&language=ar`);
         if (!j.results || j.results.length === 0) return null;
 
+        // إعطاء أولوية للعواصم والمدن الرئيسية كقاعدة عامة لجميع الدول
         const capital = j.results.find(r => r.feature_code === 'PPLC');
         if (capital) return capital;
 
@@ -320,7 +318,7 @@ async function getPlace(cityName) {
 
 async function getPrayerTimings(lat, lng, timezone) {
     try {
-        const j = await getJson(`[https://api.aladhan.com/v1/timings?latitude=$](https://api.aladhan.com/v1/timings?latitude=$){lat}&longitude=${lng}&method=4&timezonestring=${encodeURIComponent(timezone)}`);
+        const j = await getJson(`https://api.aladhan.com/v1/timings?latitude=${lat}&longitude=${lng}&method=4&timezonestring=${encodeURIComponent(timezone)}`);
         return j.data?.timings || null;
     } catch (e) { return null; }
 }
@@ -442,7 +440,7 @@ function startPrayerCheckLoop(sock) {
                     if (currentTotalMin === eveningAzkarMin && !sentReminders.has(keyEveningAzkar)) {
                         sentReminders.add(keyEveningAzkar);
                         await sock.sendMessage(jid, {
-                            text: `🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
+                            text: ```🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
                         });
                     }
                 }
