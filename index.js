@@ -165,9 +165,7 @@ async function getRandomHadith() {
                 }
             }
         }
-    } catch (e) {
-        // في حال بطء الشبكة يتم الاعتماد على حديث احتياطي
-    }
+    } catch (e) {}
 
     const backup = getRandomItem(BACKUP_HADITHS);
     return `📜 *حديث اليوم:*\n${backup.hadith}\n📚 *المصدر:* ${backup.source}`;
@@ -218,7 +216,7 @@ function fmt12(timeStr) {
     if (isNaN(h) || isNaN(mi)) return '--:--';
     const period = h >= 12 ? 'م' : 'ص';
     const h12 = h % 12 || 12;
-    return `${h12}:${pad(mi)} ${period}`;
+    return `${h12}:${pad(mi)}${period}`;
 }
 
 function fmtDur(min) {
@@ -256,7 +254,7 @@ function getNextPrayerInfo(rawTimings = {}, timeZone) {
         }
     }
 
-    return `⏳ القادمة: *${names[nextKey] || 'الفجر'}* بعد ${fmtDur(diffMin)}`;
+    return `⏳ القادمة: *${names[nextKey] \vert{}\vert{} 'الفجر'}* بعد ${fmtDur(diffMin)}`;
 }
 
 function formatTimingsSchedule(rawTimings = {}, timeZone) {
@@ -271,7 +269,7 @@ function formatTimingsSchedule(rawTimings = {}, timeZone) {
 
     const lines = list.map(item => {
         const rawTime = rawTimings?.[item.key] || '';
-        return `${item.icon} ${item.name}: ${fmt12(rawTime)}`;
+        return `${item.icon} ${item.name}:${fmt12(rawTime)}`;
     }).join('\n');
 
     return `${lines}\n\n${getNextPrayerInfo(rawTimings, timeZone)}`;
@@ -292,13 +290,20 @@ async function getJson(url) {
     return res.json();
 }
 
+// دالة دقيقة ومحدثة للبحث عن المناطق والمدن وتفادي التداخل الجغرافي
 async function getPlace(cityName) {
     try {
-        const j = await getJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityName)}&count=5&language=ar`);
+        const j = await getJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityName)}&count=10&language=ar`);
         if (!j.results || j.results.length === 0) return null;
         
-        const exactMatch = j.results.find(r => r.feature_code && r.feature_code.startsWith('PPLC')) || j.results[0];
-        return exactMatch;
+        // إعطاء أولوية مطلقة للعواصم (PPLC) ثم عواصم المحافظات/الولايات الكبرى (PPLA)
+        const capital = j.results.find(r => r.feature_code === 'PPLC');
+        if (capital) return capital;
+
+        const majorCity = j.results.find(r => r.feature_code && r.feature_code.startsWith('PPLA'));
+        if (majorCity) return majorCity;
+
+        return j.results[0];
     } catch (e) { 
         return null; 
     }
@@ -435,7 +440,7 @@ function startPrayerCheckLoop(sock) {
                     if (currentTotalMin === eveningAzkarMin && !sentReminders.has(keyEveningAzkar)) {
                         sentReminders.add(keyEveningAzkar);
                         await sock.sendMessage(jid, {
-                            text: `🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
+                            text: ```🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
                         });
                     }
                 }
@@ -520,13 +525,11 @@ async function startBot() {
 
                 const targetNode = text.replace(/^(\.تنظيف|\.حذف_قاعدة|\.مسح_قاعدة)/i, '').trim();
 
-                // إذا حدد المالك عقدة معينة (مثال: .تنظيف auth_session أو .تنظيف subscribers)
                 if (targetNode) {
                     try {
                         await remove(ref(db, targetNode));
                         await sock.sendMessage(targetJid, { text: `🗑️ *تم حذف العقدة (${targetNode}) بنجاح من قاعدة البيانات Firebase.*` }, { quoted: msg });
                         
-                        // إعادة تهيئة الذاكرة المحلية إذا كانت العقدة المحذوفة خاصة بالجلسة أو المشتركين
                         if (targetNode === 'auth_session') {
                             if (fs.existsSync(AUTH_DIR)) fs.rmSync(AUTH_DIR, { recursive: true, force: true });
                             await sock.sendMessage(targetJid, { text: `🔄 جاري إعادة تشغيل البوت وتوليد كود اقتران جديد...` });
@@ -540,7 +543,6 @@ async function startBot() {
                         await sock.sendMessage(targetJid, { text: `❌ حدث خطأ أثناء الحذف: ${e.message}` }, { quoted: msg });
                     }
                 } 
-                // إذا أرسل الأمر (.تنظيف) بدون تحديد اسم عقدة ➔ تنظيف الجلسات وإعادة الضبط
                 else {
                     try {
                         await remove(ref(db, 'auth_session'));
