@@ -3,13 +3,15 @@ import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaile
 import pino from 'pino';
 import fs from 'fs';
 import path from 'path';
+import { initializeApp } from 'firebase/app';
+import { getDatabase, ref, set, get, child } from 'firebase/database';
 
 // ================== 1. خادم Web وميزة منع الخمول ==================
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-    res.send('🕌 البوت يعمل بنجاح وعلى مدار 24 ساعة!');
+    res.send('🕌 البوت يعمل بنجاح وعلى مدار 24 ساعة ومربوط بـ Firebase!');
 });
 
 app.listen(PORT, () => {
@@ -23,116 +25,70 @@ if (RENDER_URL) {
     }, 5 * 60 * 1000);
 }
 
-// ================== 2. إعدادات المتغيرات وقاعدة البيانات والسحابة ==================
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-const GITHUB_REPO = "aliquteenah/salaty";
-const GITHUB_FILE_PATH = "prayer_subscribers.json";
-const AUTH_FILE_PATH = "prayer_bot_auth.json";
+// ================== 2. إعداد وقاعدة بيانات Firebase ==================
+const firebaseConfig = {
+    databaseURL: "https://salaty-ed58a-default-rtdb.firebaseio.com"
+};
 
-const SUBSCRIBERS_FILE = path.join(process.cwd(), 'prayer_subscribers.json');
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getDatabase(firebaseApp);
+
 const AUTH_DIR = path.join(process.cwd(), 'prayer_bot_auth');
-
 if (!fs.existsSync(AUTH_DIR)) {
     fs.mkdirSync(AUTH_DIR, { recursive: true });
 }
 
 let subscribers = {};
 
-// مزامنة ورفع أي ملف نصي/بيانات إلى GitHub
-async function syncFileToGithub(repoPath, contentString, commitMessage) {
-    if (!GITHUB_TOKEN) return;
+// 1. استرجاع المشتركين من Firebase عند الإقلاع
+async function restoreSubscribersFromFirebase() {
     try {
-        const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/${repoPath}`;
-        let sha = null;
-        const getRes = await fetch(url, {
-            headers: {
-                "Authorization": `Bearer ${GITHUB_TOKEN}`,
-                "Accept": "application/vnd.github.v3+json"
-            }
-        });
-
-        if (getRes.ok) {
-            const fileData = await getRes.json();
-            sha = fileData.sha;
+        const dbRef = ref(db);
+        const snapshot = await get(child(dbRef, 'subscribers'));
+        if (snapshot.exists()) {
+            subscribers = snapshot.val() || {};
+            console.log(`✅ تم استرجاع (${Object.keys(subscribers).length}) مشترك/مجموعة من Firebase بنجاح!`);
+        } else {
+            console.log("ℹ️ لا يوجد مشتركين مخزنين في Firebase حالياً.");
         }
-
-        const base64Content = Buffer.from(contentString).toString('base64');
-        await fetch(url, {
-            method: "PUT",
-            headers: {
-                "Authorization": `Bearer ${GITHUB_TOKEN}`,
-                "Accept": "application/vnd.github.v3+json",
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                message: commitMessage,
-                content: base64Content,
-                sha: sha || undefined
-            })
-        });
     } catch (e) {
-        console.log(`خطأ المزامنة مع GitHub (${repoPath}):`, e.message);
+        console.log("❌ خطأ جلب المشتركين من Firebase:", e.message);
     }
 }
 
-// 1. استرجاع المشتركين من GitHub عند الإقلاع
-async function restoreSubscribersFromGithub() {
-    if (!GITHUB_TOKEN) return;
+// 2. حفظ وتحديث المشتركين في Firebase
+async function saveSubscribersToFirebase() {
     try {
-        const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/${GITHUB_FILE_PATH}`;
-        const res = await fetch(url, {
-            headers: {
-                "Authorization": `Bearer ${GITHUB_TOKEN}`,
-                "Accept": "application/vnd.github.v3+json"
-            }
-        });
-
-        if (res.ok) {
-            const data = await res.json();
-            const jsonString = Buffer.from(data.content, 'base64').toString('utf8');
-            subscribers = JSON.parse(jsonString);
-            fs.writeFileSync(SUBSCRIBERS_FILE, jsonString, 'utf8');
-            console.log(`✅ تم استرجاع (${Object.keys(subscribers).length}) مشترك من GitHub بنجاح!`);
-        }
+        await set(ref(db, 'subscribers'), subscribers);
     } catch (e) {
-        console.log("لم يتم العثور على قائمة مشتركين سابقة في GitHub:", e.message);
+        console.log("❌ خطأ حفظ المشتركين في Firebase:", e.message);
     }
 }
 
-// 2. استرجاع مجلد الجلسة كاملاً بجميع ملفاته من GitHub عند الإقلاع
-async function restoreAuthFromGithub() {
-    if (!GITHUB_TOKEN) return;
+// 3. استرجاع الجلسة من Firebase عند الإقلاع
+async function restoreAuthFromFirebase() {
     try {
-        const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/${AUTH_FILE_PATH}`;
-        const res = await fetch(url, {
-            headers: {
-                "Authorization": `Bearer ${GITHUB_TOKEN}`,
-                "Accept": "application/vnd.github.v3+json"
-            }
-        });
-
-        if (res.ok) {
-            const data = await res.json();
-            const jsonString = Buffer.from(data.content, 'base64').toString('utf8');
-            const authFiles = JSON.parse(jsonString);
-
+        const dbRef = ref(db);
+        const snapshot = await get(child(dbRef, 'auth_session'));
+        if (snapshot.exists()) {
+            const authFiles = snapshot.val();
             if (!fs.existsSync(AUTH_DIR)) {
                 fs.mkdirSync(AUTH_DIR, { recursive: true });
             }
-
-            for (const [filename, contentBase64] of Object.entries(authFiles)) {
+            for (const [safeFilename, contentBase64] of Object.entries(authFiles)) {
+                const filename = safeFilename.replace(/_DOT_/g, '.');
                 const fileBuf = Buffer.from(contentBase64, 'base64');
                 fs.writeFileSync(path.join(AUTH_DIR, filename), fileBuf);
             }
-            console.log("✅ تم استرجاع وترميم ملفات جلسة الواتساب من GitHub بنجاح!");
+            console.log("✅ تم استرجاع جلسة الواتساب من Firebase بنجاح!");
         }
     } catch (e) {
-        console.log("تعذر جلب ملفات الجلسة من GitHub:", e.message);
+        console.log("❌ خطأ استرجاع الجلسة من Firebase:", e.message);
     }
 }
 
-// حفظ ومزامنة كامل ملفات مجلد الجلسة إلى GitHub
-async function saveAndSyncAuth() {
+// 4. حفظ وتحديث ملفات الجلسة في Firebase
+async function saveAuthToFirebase() {
     try {
         if (!fs.existsSync(AUTH_DIR)) return;
         const files = fs.readdirSync(AUTH_DIR);
@@ -141,22 +97,15 @@ async function saveAndSyncAuth() {
         for (const file of files) {
             const filePath = path.join(AUTH_DIR, file);
             if (fs.statSync(filePath).isFile()) {
-                const fileBuf = fs.readFileSync(filePath);
-                authData[file] = fileBuf.toString('base64');
+                const safeFileName = file.replace(/\./g, '_DOT_');
+                authData[safeFileName] = fs.readFileSync(filePath).toString('base64');
             }
         }
 
-        await syncFileToGithub(AUTH_FILE_PATH, JSON.stringify(authData), "🔑 حفظ وتحديث جلسة الواتساب");
+        await set(ref(db, 'auth_session'), authData);
     } catch (e) {
-        console.log("خطأ حفظ الجلسة على GitHub:", e.message);
+        console.log("❌ خطأ حفظ الجلسة في Firebase:", e.message);
     }
-}
-
-// حفظ ومزامنة المشتركين
-async function saveAndSyncSubscribers() {
-    const contentString = JSON.stringify(subscribers, null, 2);
-    fs.writeFileSync(SUBSCRIBERS_FILE, contentString);
-    await syncFileToGithub(GITHUB_FILE_PATH, contentString, "🔄 التحديث التلقائي لملف المشتركين");
 }
 
 // ================== 3. الأدعية والأحاديث والتوقيت ==================
@@ -170,7 +119,7 @@ const HADITH_LIST = [
 const BETWEEN_AZAN_IQAMA_DUAS = [
     "«اللَّهُمَّ رَبَّ هَذِهِ الدَّعْوَةِ التَّامَّةِ، وَالصَّلاَةِ الْقَائِمَةِ، آتِ مُحَمَّدًا الْوَسِيلَةَ وَالْفَضِيلَةَ، وَابْعَثْهُ مَقَامًا مَحْمُودًا الَّذِي وَعَدْتَهُ»",
     "«اللَّهُمَّ إِنِّي أَسْأَلُكَ الْعَفْوَ وَالْعَافِيَةَ فِي الدُّنْيَا وَالآخِرَةِ»",
-    "«رَضِيتُ بِاللَّهِ رَبًّا، وَبِمُحَمَّدٍ رَسُولاً، وَبِالإِسْلاَمِ دِينًا»"
+    "«رَضِيتُ بِاللَّهِ رَبًّا، وَبِمُحَمَّدٍ رَسُولاً، وَبالإِسْلاَمِ دِينًا»"
 ];
 
 function getRandomItem(arr) {
@@ -191,7 +140,7 @@ function fmt12(timeStr) {
     if (isNaN(h) || isNaN(mi)) return '--:--';
     const period = h >= 12 ? 'م' : 'ص';
     const h12 = h % 12 || 12;
-    return `${h12}:${pad(mi)}${period}`;
+    return `${h12}:${pad(mi)} ${period}`;
 }
 
 function fmtDur(min) {
@@ -229,7 +178,7 @@ function getNextPrayerInfo(rawTimings = {}, timeZone) {
         }
     }
 
-    return `⏳ القادمة: *${names[nextKey] \vert{}\vert{} 'الفجر'}* بعد ${fmtDur(diffMin)}`;
+    return `⏳ القادمة: *${names[nextKey] || 'الفجر'}* بعد ${fmtDur(diffMin)}`;
 }
 
 function formatTimingsSchedule(rawTimings = {}, timeZone) {
@@ -244,7 +193,7 @@ function formatTimingsSchedule(rawTimings = {}, timeZone) {
 
     const lines = list.map(item => {
         const rawTime = rawTimings?.[item.key] || '';
-        return `${item.icon} ${item.name}:${fmt12(rawTime)}`;
+        return `${item.icon} ${item.name}: ${fmt12(rawTime)}`;
     }).join('\n');
 
     return `${lines}\n\n${getNextPrayerInfo(rawTimings, timeZone)}`;
@@ -306,7 +255,7 @@ function startPrayerCheckLoop(sock) {
                     if (newTimings) {
                         subscribers[jid].rawTimings = newTimings;
                         subscribers[jid].lastFetchDate = todayDateStr;
-                        await saveAndSyncSubscribers();
+                        await saveSubscribersToFirebase();
                     } else {
                         continue;
                     }
@@ -365,7 +314,7 @@ function startPrayerCheckLoop(sock) {
                     }
                 }
 
-                // أذكار الصباح (بعد الفجر بـ 20 دقيقة)
+                // أذكار الصباح
                 if (rawTimings['Fajr']) {
                     const [fH, fM] = rawTimings['Fajr'].split(' ')[0].split(':').map(Number);
                     const morningAzkarMin = fH * 60 + fM + 20;
@@ -373,12 +322,12 @@ function startPrayerCheckLoop(sock) {
                     if (currentTotalMin === morningAzkarMin && !sentReminders.has(keyMorningAzkar)) {
                         sentReminders.add(keyMorningAzkar);
                         await sock.sendMessage(jid, {
-                            text: `🌅 *تذكير بأذكار الصباح* 🌸\n\nاصبحنا واصبح الملك لله والحمد لله.. لا تنسَ قراءة أذكار الصباح لتحفظك وتنوّر يومك ✨\n\n«أَلا بِذِكْرِ اللَّهِ تَطْمَئِنُّ الْقُلُوبُ»`
+                            text: `🌅 *تذكير بأذكار الصباح* 🌸\n\nأصبحنا وأصبح الملك لله والحمد لله.. لا تنسَ قراءة أذكار الصباح لتحفظك وتنوّر يومك ✨\n\n«أَلا بِذِكْرِ اللَّهِ تَطْمَئِنُّ الْقُلُوبُ»`
                         });
                     }
                 }
 
-                // أذكار المساء (بعد العصر بـ 20 دقيقة)
+                // أذكار المساء
                 if (rawTimings['Asr']) {
                     const [aH, aM] = rawTimings['Asr'].split(' ')[0].split(':').map(Number);
                     const eveningAzkarMin = aH * 60 + aM + 20;
@@ -386,7 +335,7 @@ function startPrayerCheckLoop(sock) {
                     if (currentTotalMin === eveningAzkarMin && !sentReminders.has(keyEveningAzkar)) {
                         sentReminders.add(keyEveningAzkar);
                         await sock.sendMessage(jid, {
-                            text: ``🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
+                            text: `🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
                         });
                     }
                 }
@@ -405,9 +354,8 @@ function startPrayerCheckLoop(sock) {
 const PHONE_NUMBER = "966551138192";
 
 async function startBot() {
-    // استعادة الجلسة والمشتركين من GitHub فور الإقلاع
-    await restoreAuthFromGithub();
-    await restoreSubscribersFromGithub();
+    await restoreAuthFromFirebase();
+    await restoreSubscribersFromFirebase();
 
     const { version } = await fetchLatestBaileysVersion();
     const { state, saveCreds } = await useMultiFileAuthState('prayer_bot_auth');
@@ -424,7 +372,7 @@ async function startBot() {
 
     sock.ev.on('creds.update', async () => {
         await saveCreds();
-        await saveAndSyncAuth();
+        await saveAuthToFirebase();
     });
 
     if (!sock.authState.creds.registered) {
@@ -450,8 +398,8 @@ async function startBot() {
                 setTimeout(startBot, 3000);
             }
         } else if (connection === 'open') {
-            console.log('✅ تم تسجيل الدخول بنجاح! تم استرجاع ومزامنة الجلسة والمشتركين مع GitHub.');
-            await saveAndSyncAuth();
+            console.log('✅ تم تسجيل الدخول بنجاح! تم ربط واسترجاع البيانات من Firebase.');
+            await saveAuthToFirebase();
             startPrayerCheckLoop(sock);
         }
     });
@@ -496,13 +444,13 @@ async function startBot() {
                         rawTimings: rawTimings,
                         lastFetchDate: todayDateStr
                     };
-                    await saveAndSyncSubscribers();
+                    await saveSubscribersToFirebase();
 
                     const dateObj = getFormattedDate(tz);
                     const timingsSchedule = formatTimingsSchedule(rawTimings, tz);
 
                     await sock.sendMessage(targetJid, {
-                        text: `✅ *تم اشتراكك بنجاح!* ✨\n\n📍 *المدينة:* ${place.name} (${place.country || ''})\n\n${dateObj.fullText}\n\n${timingsSchedule}\n\n───────────────\n${getRandomHadith()}`
+                        text: `✅ *تم الاشتراك بنجاح!* ✨\n\n📍 *المدينة:* ${place.name} (${place.country || ''})\n\n${dateObj.fullText}\n\n${timingsSchedule}\n\n───────────────\n${getRandomHadith()}`
                     }, { quoted: msg });
                 }
             }
@@ -535,9 +483,9 @@ async function startBot() {
                         rawTimings: rawTimings,
                         lastFetchDate: todayDateStr
                     };
-                    await saveAndSyncSubscribers();
+                    await saveSubscribersToFirebase();
 
-                    await sock.sendMessage(targetJid, { text: `✅ *تم تعديل مدينتك بنجاح إلى (${place.name} - ${place.country || ''})!* 🔄` }, { quoted: msg });
+                    await sock.sendMessage(targetJid, { text: `✅ *تم تعديل المدينة بنجاح إلى (${place.name} - ${place.country || ''})!* 🔄` }, { quoted: msg });
                 }
             }
 
@@ -545,7 +493,7 @@ async function startBot() {
             else if (cleanText === 'صلاتي' || cleanText === 'مواقتي') {
                 const sub = subscribers[targetJid];
                 if (!sub) {
-                    await sock.sendMessage(targetJid, { text: `أنت غير مشترك حالياً. أرسل *اشتراك اسم_المدينة* للتفعيل.` }, { quoted: msg });
+                    await sock.sendMessage(targetJid, { text: `غير مشترك حالياً. أرسل *اشتراك اسم_المدينة* للتفعيل.` }, { quoted: msg });
                     return;
                 }
 
@@ -553,7 +501,7 @@ async function startBot() {
                 const timingsSchedule = formatTimingsSchedule(sub.rawTimings || {}, sub.timezone);
 
                 await sock.sendMessage(targetJid, {
-                    text: `🕌 *مواقيت الصلاة الخاصة بك* 🌸\n\n📍 *المدينة:* ${sub.cityName} (${sub.country})\n\n${dateObj.fullText}\n\n${timingsSchedule}`
+                    text: `🕌 *مواقيت الصلاة* 🌸\n\n📍 *المدينة:* ${sub.cityName} (${sub.country})\n\n${dateObj.fullText}\n\n${timingsSchedule}`
                 }, { quoted: msg });
             }
 
@@ -561,26 +509,26 @@ async function startBot() {
             else if (cleanText === 'إلغاء الاشتراك' || cleanText === 'الغاء الاشتراك' || cleanText === 'إلغاء اشتراك' || cleanText === 'الغاء اشتراك') {
                 if (subscribers[targetJid]) {
                     delete subscribers[targetJid];
-                    await saveAndSyncSubscribers();
-                    await sock.sendMessage(targetJid, { text: `🛑 *تم إلغاء اشتراكك في خدمة أوقات الصلاة بنجاح.*` }, { quoted: msg });
+                    await saveSubscribersToFirebase();
+                    await sock.sendMessage(targetJid, { text: `🛑 *تم إلغاء الاشتراك في خدمة أوقات الصلاة بنجاح.*` }, { quoted: msg });
                 } else {
-                    await sock.sendMessage(targetJid, { text: `أنت غير مشترك في الخدمة حالياً.` }, { quoted: msg });
+                    await sock.sendMessage(targetJid, { text: `غير مشترك في الخدمة حالياً.` }, { quoted: msg });
                 }
             }
 
             // 5. أمر المساعدة والأوامر
             else if (cleanText === '.مساعدة' || cleanText === 'مساعدة' || cleanText === 'اوامر' || cleanText === 'الأوامر') {
                 await sock.sendMessage(targetJid, {
-                    text: `🕌 *بوت التذكير والإشعار الإسلامي الشامل*\n\n• *اشتراك اسم_المدينة* ➔ الاشتراك بمدينة معينة (مثال: اشتراك جازان).\n• *صلاتي* أو *مواقتي* ➔ عرض مواقيت اليوم والتاريخ لمدينتك والصلاة القادمة.\n• *تعديل اسم_المدينة* ➔ تغيير مدينتك بسهولة.\n• *إلغاء الاشتراك* ➔ لإيقاف استقبال التذكيرات.\n• *فحص* ➔ للتأكد من جاهزية واستجابة البوت.\n\n⚙️ *أوامر المطور:* \n• *.الاحصائيات* ➔ عرض عدد المشتركين والمدن.\n• *.اذاعة النص* ➔ إرسال رسالة لكل المشتركين.`
+                    text: `🕌 *بوت التذكير والإشعار الإسلامي الشامل*\n\n• *اشتراك اسم_المدينة* ➔ الاشتراك بمدينة معينة (مثال: اشتراك جازان).\n• *صلاتي* أو *مواقتي* ➔ عرض مواقيت اليوم والتاريخ للمدينة والصلاة القادمة.\n• *تعديل اسم_المدينة* ➔ تغيير المدينة بسهولة.\n• *إلغاء الاشتراك* ➔ لإيقاف استقبال التذكيرات.\n• *فحص* ➔ للتأكد من جاهزية واستجابة البوت.\n\n⚙️ *أوامر المطور:* \n• *.الاحصائيات* ➔ عرض عدد المشتركين والمدن.\n• *.اذاعة النص* ➔ إرسال رسالة لكل المشتركين والمجموعات.`
                 }, { quoted: msg });
             }
 
             // 6. أمر فحص الاستجابة
             else if (cleanText === 'فحص' || cleanText === 'تست' || cleanText === 'ping') {
-                await sock.sendMessage(targetJid, { text: `✅ البوت شغال ومتصل بنجاح على منصة Render ومربوط بالسحابة!` }, { quoted: msg });
+                await sock.sendMessage(targetJid, { text: `✅ البوت شغال ومتصل بنجاح ومربوط بقاعدة بيانات Firebase السحابية!` }, { quoted: msg });
             }
 
-            // 7. أمر الإحصائيات
+            // 7. أمر الإحصائيات (للمطور)
             else if (cleanText === '.الاحصائيات' || cleanText === 'الاحصائيات' || cleanText === '.إحصائيات') {
                 if (!isFromMe) return;
 
@@ -592,15 +540,15 @@ async function startBot() {
                 }
 
                 let cityDetails = Object.entries(citiesCount)
-                    .map(([c, n]) => `• ${c}: ${n} مشترك`)
+                    .map(([c, n]) => `• ${c}: ${n} مشترك/مجموعة`)
                     .join('\n');
 
                 await sock.sendMessage(targetJid, {
-                    text: `📊 *إحصائيات البوت:* \n\n👥 *إجمالي المشتركين:* ${count}\n\n📍 *التوزيع حسب المدن:*\n${cityDetails || 'لا يوجد مشتركين حتى الآن'}`
+                    text: `📊 *إحصائيات البوت:* \n\n👥 *إجمالي المحادثات المشتركة:* ${count}\n\n📍 *التوزيع حسب المدن:*\n${cityDetails || 'لا يوجد مشتركين حتى الآن'}`
                 }, { quoted: msg });
             }
 
-            // 8. أمر الإذاعة العامة
+            // 8. أمر الإذاعة العامة (للمطور)
             else if (cleanText.startsWith('.اذاعة') || cleanText.startsWith('اذاعة')) {
                 if (!isFromMe) return;
 
@@ -611,7 +559,7 @@ async function startBot() {
                 }
 
                 const allJids = Object.keys(subscribers);
-                await sock.sendMessage(targetJid, { text: `📢 جاري بدء الإذاعة لـ (${allJids.length}) مشترك...` }, { quoted: msg });
+                await sock.sendMessage(targetJid, { text: `📢 جاري بدء الإذاعة لـ (${allJids.length}) مشترك ومجموعة...` }, { quoted: msg });
 
                 let success = 0;
                 for (const jid of allJids) {
@@ -621,7 +569,7 @@ async function startBot() {
                     } catch (e) {}
                 }
 
-                await sock.sendMessage(targetJid, { text: `✅ تم إرسال الإذاعة بنجاح إلى (${success}/${allJids.length}) مشترك.` }, { quoted: msg });
+                await sock.sendMessage(targetJid, { text: `✅ تم إرسال الإذاعة بنجاح إلى (${success}/${allJids.length}) مشترك/مجموعة.` }, { quoted: msg });
             }
 
         } catch (err) {
