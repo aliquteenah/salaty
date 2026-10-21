@@ -4,7 +4,7 @@ import pino from 'pino';
 import fs from 'fs';
 import path from 'path';
 import { initializeApp } from 'firebase/app';
-import { getDatabase, ref, set, get, child } from 'firebase/database';
+import { getDatabase, ref, set, get, child, remove } from 'firebase/database';
 
 // ================== 1. خادم Web وميزة منع الخمول ==================
 const app = express();
@@ -39,8 +39,9 @@ if (!fs.existsSync(AUTH_DIR)) {
 }
 
 let subscribers = {};
+let hadithSubscribers = {}; // لحفظ اشتراكات الأحاديث المجدولة (حديث Xد)
 
-// 1. استرجاع المشتركين من Firebase عند الإقلاع
+// 1. استرجاع البيانات من Firebase عند الإقلاع
 async function restoreSubscribersFromFirebase() {
     try {
         const dbRef = ref(db);
@@ -48,8 +49,12 @@ async function restoreSubscribersFromFirebase() {
         if (snapshot.exists()) {
             subscribers = snapshot.val() || {};
             console.log(`✅ تم استرجاع (${Object.keys(subscribers).length}) مشترك/مجموعة من Firebase بنجاح!`);
-        } else {
-            console.log("ℹ️ لا يوجد مشتركين مخزنين في Firebase حالياً.");
+        }
+        
+        const hadithSnap = await get(child(dbRef, 'hadith_subscribers'));
+        if (hadithSnap.exists()) {
+            hadithSubscribers = hadithSnap.val() || {};
+            console.log(`✅ تم استرجاع (${Object.keys(hadithSubscribers).length}) اشتراك أحاديث دورية بنجاح!`);
         }
     } catch (e) {
         console.log("❌ خطأ جلب المشتركين من Firebase:", e.message);
@@ -60,6 +65,7 @@ async function restoreSubscribersFromFirebase() {
 async function saveSubscribersToFirebase() {
     try {
         await set(ref(db, 'subscribers'), subscribers);
+        await set(ref(db, 'hadith_subscribers'), hadithSubscribers);
     } catch (e) {
         console.log("❌ خطأ حفظ المشتركين في Firebase:", e.message);
     }
@@ -126,7 +132,7 @@ function getRandomItem(arr) {
     return arr[Math.floor(Math.random() * arr.length)];
 }
 
-// دالة جلب حديث نبوي شريف من موسوعة HadeethEnc الموثوقة
+// دالة جلب حديث نبوي مع الشرح والدرجة والمصدر من HadeethEnc
 async function getRandomHadith() {
     try {
         const categories = [2, 3, 4, 5]; 
@@ -148,6 +154,11 @@ async function getRandomHadith() {
                 if (detailRes.ok) {
                     const detailData = await detailRes.json();
                     let text = `📜 *حديث اليوم (من موسوعة HadeethEnc):*\n«${detailData.hadeeth.trim()}»`;
+                    
+                    if (detailData.explanation) {
+                        text += `\n\n💡 *الشرح:* ${detailData.explanation.trim()}`;
+                    }
+
                     if (detailData.attribution) text += `\n\n📚 *المصدر:* ${detailData.attribution}`;
                     if (detailData.grade) text += `\n✨ *درجة الحديث:* ${detailData.grade}`;
                     return text;
@@ -160,6 +171,42 @@ async function getRandomHadith() {
 
     const backup = getRandomItem(BACKUP_HADITHS);
     return `📜 *حديث اليوم:*\n${backup.hadith}\n📚 *المصدر:* ${backup.source}`;
+}
+
+// دالة مخصصة لجلب الحديث مع الشرح فقط (لخدمة التذكير الدوري)
+async function getHadithWithExplanationOnly() {
+    try {
+        const categories = [2, 3, 4, 5];
+        const randomCat = getRandomItem(categories);
+
+        const res = await fetch(`https://hadeethenc.com/api/v1/hadeeths/list/?language=ar&category_id=${randomCat}&page=1&per_page=25`, {
+            signal: AbortSignal.timeout(5000)
+        });
+
+        if (res.ok) {
+            const data = await res.json();
+            if (data && data.data && data.data.length > 0) {
+                const randomItem = getRandomItem(data.data);
+
+                const detailRes = await fetch(`https://hadeethenc.com/api/v1/hadeeths/one/?language=ar&id=${randomItem.id}`, {
+                    signal: AbortSignal.timeout(5000)
+                });
+
+                if (detailRes.ok) {
+                    const detailData = await detailRes.json();
+                    let text = `📜 *حديث نبوي شريف:*\n«${detailData.hadeeth.trim()}»`;
+
+                    if (detailData.explanation) {
+                        text += `\n\n💡 *الشرح:* ${detailData.explanation.trim()}`;
+                    }
+                    return text;
+                }
+            }
+        }
+    } catch (e) {}
+
+    const backup = getRandomItem(BACKUP_HADITHS);
+    return `📜 *حديث نبوي شريف:*\n${backup.hadith}`;
 }
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -270,7 +317,29 @@ const sentReminders = new Set();
 function startPrayerCheckLoop(sock) {
     setInterval(async () => {
         const now = new Date();
-        
+        const nowMs = Date.now();
+
+        // 1. فحص إرسال الأحاديث المجدولة كل X دقائق
+        for (const [jid, config] of Object.entries(hadithSubscribers)) {
+            try {
+                if (!config.intervalMinutes || config.intervalMinutes <= 0) continue;
+                
+                const intervalMs = config.intervalMinutes * 60 * 1000;
+                const lastSent = config.lastSentTime || 0;
+
+                if (nowMs - lastSent >= intervalMs) {
+                    hadithSubscribers[jid].lastSentTime = nowMs;
+                    await saveSubscribersToFirebase();
+
+                    const hadithText = await getHadithWithExplanationOnly();
+                    await sock.sendMessage(jid, { text: hadithText });
+                }
+            } catch (err) {
+                console.log(`خطأ التذكير الدوري بالحديث لـ ${jid}:`, err.message);
+            }
+        }
+
+        // 2. فحص مواقيت الصلاة والأذكار
         for (const [jid, info] of Object.entries(subscribers)) {
             try {
                 const tz = info.timezone;
@@ -445,7 +514,80 @@ async function startBot() {
             const cleanText = text.toLowerCase();
             const isFromMe = msg.key.fromMe;
 
-            // 1. أمر الاشتراك
+            // 0. أمر المطور الخص بحذف الملفات وعقد Firebase غير المرغوب فيها (.تنظيف اسم_العقدة)
+            if (cleanText.startsWith('.تنظيف') || cleanText.startsWith('.حذف_قاعدة') || cleanText.startsWith('.مسح_قاعدة')) {
+                if (!isFromMe) return;
+
+                const targetNode = text.replace(/^(\.تنظيف|\.حذف_قاعدة|\.مسح_قاعدة)/i, '').trim();
+
+                // إذا حدد المالك عقدة معينة (مثال: .تنظيف auth_session أو .تنظيف subscribers)
+                if (targetNode) {
+                    try {
+                        await remove(ref(db, targetNode));
+                        await sock.sendMessage(targetJid, { text: `🗑️ *تم حذف العقدة (${targetNode}) بنجاح من قاعدة البيانات Firebase.*` }, { quoted: msg });
+                        
+                        // إعادة تهيئة الذاكرة المحلية إذا كانت العقدة المحذوفة خاصة بالجلسة أو المشتركين
+                        if (targetNode === 'auth_session') {
+                            if (fs.existsSync(AUTH_DIR)) fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+                            await sock.sendMessage(targetJid, { text: `🔄 جاري إعادة تشغيل البوت وتوليد كود اقتران جديد...` });
+                            process.exit(0);
+                        } else if (targetNode === 'subscribers') {
+                            subscribers = {};
+                        } else if (targetNode === 'hadith_subscribers') {
+                            hadithSubscribers = {};
+                        }
+                    } catch (e) {
+                        await sock.sendMessage(targetJid, { text: `❌ حدث خطأ أثناء الحذف: ${e.message}` }, { quoted: msg });
+                    }
+                } 
+                // إذا أرسل الأمر (.تنظيف) بدون تحديد اسم عقدة ➔ تنظيف الجلسات وإعادة الضبط
+                else {
+                    try {
+                        await remove(ref(db, 'auth_session'));
+                        if (fs.existsSync(AUTH_DIR)) fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+                        await sock.sendMessage(targetJid, { text: `🧹 *تم تنظيف الجلسة المخزنة في Firebase بنجاح!*\n\n🔄 جاري إعادة التشغيل وتوليد كود جديد...` }, { quoted: msg });
+                        process.exit(0);
+                    } catch (e) {
+                        await sock.sendMessage(targetJid, { text: `❌ خطأ في التنظيف: ${e.message}` }, { quoted: msg });
+                    }
+                }
+                return;
+            }
+
+            // 1. أمر التذكير الدوري بالأحاديث (مثال: حديث 2د أو حديث 10د)
+            const hadithMatch = text.match(/^حديث\s*(\d+)\s*د/i);
+            if (hadithMatch) {
+                const mins = parseInt(hadithMatch[1], 10);
+                if (mins && mins > 0) {
+                    hadithSubscribers[targetJid] = {
+                        intervalMinutes: mins,
+                        lastSentTime: Date.now()
+                    };
+                    await saveSubscribersToFirebase();
+
+                    await sock.sendMessage(targetJid, {
+                        text: `✅ *تم تفعيل التذكير الدوري بالأحاديث الشريفة!*\n\nسيتم إرسال حديث نبوي شريف مع الشرح كل *${mins} دقيقة* تلقائياً. 📜✨\n\n_لإيقاف التذكير في أي وقت أرسل:_ *ايقاف الحديث*`
+                    }, { quoted: msg });
+
+                    const firstHadith = await getHadithWithExplanationOnly();
+                    await sock.sendMessage(targetJid, { text: firstHadith });
+                    return;
+                }
+            }
+
+            // أمر إيقاف التذكير الدوري بالأحاديث
+            else if (cleanText === 'ايقاف الحديث' || cleanText === 'إيقاف الحديث' || cleanText === 'الغاء الحديث' || cleanText === 'إلغاء الحديث') {
+                if (hadithSubscribers[targetJid]) {
+                    delete hadithSubscribers[targetJid];
+                    await saveSubscribersToFirebase();
+                    await sock.sendMessage(targetJid, { text: `🛑 *تم إيقاف التذكير الدوري بالأحاديث بنجاح.*` }, { quoted: msg });
+                } else {
+                    await sock.sendMessage(targetJid, { text: `لا يوجد تذكير دوري بالأحاديث مفعّل حالياً.` }, { quoted: msg });
+                }
+                return;
+            }
+
+            // 2. أمر الاشتراك في أوقات الصلاة
             if (cleanText.startsWith('اشتراك')) {
                 const cityName = text.replace(/^اشتراك/i, '').trim();
                 if (!cityName) {
@@ -487,7 +629,7 @@ async function startBot() {
                 }
             }
 
-            // 2. أمر تعديل المدينة
+            // 3. أمر تعديل المدينة
             else if (cleanText.startsWith('تعديل') || cleanText.startsWith('تغيير')) {
                 const newCity = text.replace(/^(تعديل|تغيير)/i, '').trim();
                 if (!newCity) {
@@ -521,7 +663,7 @@ async function startBot() {
                 }
             }
 
-            // 3. أمر صلاتي / مواقتي
+            // 4. أمر صلاتي / مواقتي
             else if (cleanText === 'صلاتي' || cleanText === 'مواقتي') {
                 const sub = subscribers[targetJid];
                 if (!sub) {
@@ -537,7 +679,7 @@ async function startBot() {
                 }, { quoted: msg });
             }
 
-            // 4. أمر إلغاء الاشتراك
+            // 5. أمر إلغاء الاشتراك في المواقيت
             else if (cleanText === 'إلغاء الاشتراك' || cleanText === 'الغاء الاشتراك' || cleanText === 'إلغاء اشتراك' || cleanText === 'الغاء اشتراك') {
                 if (subscribers[targetJid]) {
                     delete subscribers[targetJid];
@@ -548,23 +690,24 @@ async function startBot() {
                 }
             }
 
-            // 5. أمر المساعدة والأوامر
+            // 6. أمر المساعدة والأوامر
             else if (cleanText === '.مساعدة' || cleanText === 'مساعدة' || cleanText === 'اوامر' || cleanText === 'الأوامر') {
                 await sock.sendMessage(targetJid, {
-                    text: `🕌 *بوت التذكير والإشعار الإسلامي الشامل*\n\n• *اشتراك اسم_المدينة* ➔ الاشتراك بمدينة معينة (مثال: اشتراك جازان).\n• *صلاتي* أو *مواقتي* ➔ عرض مواقيت اليوم والتاريخ للمدينة والصلاة القادمة.\n• *تعديل اسم_المدينة* ➔ تغيير المدينة بسهولة.\n• *إلغاء الاشتراك* ➔ لإيقاف استقبال التذكيرات.\n• *فحص* ➔ للتأكد من جاهزية واستجابة البوت.\n\n⚙️ *أوامر المطور:* \n• *.الاحصائيات* ➔ عرض عدد المشتركين والمدن.\n• *.اذاعة النص* ➔ إرسال رسالة لكل المشتركين والمجموعات.`
+                    text: `🕌 *بوت التذكير والإشعار الإسلامي الشامل*\n\n• *اشتراك اسم_المدينة* ➔ الاشتراك بمدينة معينة (مثال: اشتراك جازان).\n• *صلاتي* أو *مواقتي* ➔ عرض مواقيت اليوم والتاريخ للمدينة والصلاة القادمة.\n• *تعديل اسم_المدينة* ➔ تغيير المدينة بسهولة.\n• *إلغاء الاشتراك* ➔ لإيقاف استقبال تنبيهات الصلاة.\n• *حديث 2د* أو *حديث 10د* ➔ تفعيل تذكير بالأحاديث والشرح كل عدد دقائق محدد.\n• *ايقاف الحديث* ➔ لإيقاف التذكير الدوري بالأحاديث.\n• *فحص* ➔ للتأكد من جاهزية واستجابة البوت.\n\n⚙️ *أوامر المطور:* \n• *.الاحصائيات* ➔ عرض عدد المشتركين والمدن.\n• *.اذاعة النص* ➔ إرسال رسالة لكل المشتركين والمجموعات.\n• *.تنظيف* ➔ لحذف الجلسات التالفة أو مسح العقد غير المرغوب فيها من Firebase.`
                 }, { quoted: msg });
             }
 
-            // 6. أمر فحص الاستجابة
+            // 7. أمر فحص الاستجابة
             else if (cleanText === 'فحص' || cleanText === 'تست' || cleanText === 'ping') {
                 await sock.sendMessage(targetJid, { text: `✅ البوت شغال ومتصل بنجاح ومربوط بقاعدة بيانات Firebase السحابية!` }, { quoted: msg });
             }
 
-            // 7. أمر الإحصائيات (للمطور)
+            // 8. أمر الإحصائيات (للمطور)
             else if (cleanText === '.الاحصائيات' || cleanText === 'الاحصائيات' || cleanText === '.إحصائيات') {
                 if (!isFromMe) return;
 
                 const count = Object.keys(subscribers).length;
+                const hadithCount = Object.keys(hadithSubscribers).length;
                 const citiesCount = {};
 
                 for (const sub of Object.values(subscribers)) {
@@ -576,11 +719,11 @@ async function startBot() {
                     .join('\n');
 
                 await sock.sendMessage(targetJid, {
-                    text: `📊 *إحصائيات البوت:* \n\n👥 *إجمالي المحادثات المشتركة:* ${count}\n\n📍 *التوزيع حسب المدن:*\n${cityDetails || 'لا يوجد مشتركين حتى الآن'}`
+                    text: `📊 *إحصائيات البوت:* \n\n👥 *إجمالي المشتركين بمواقيت الصلاة:* ${count}\n📜 *المشتركين بالأحاديث الدورية:* ${hadithCount}\n\n📍 *التوزيع حسب المدن:*\n${cityDetails || 'لا يوجد مشتركين حتى الآن'}`
                 }, { quoted: msg });
             }
 
-            // 8. أمر الإذاعة العامة (للمطور)
+            // 9. أمر الإذاعة العامة (للمطور)
             else if (cleanText.startsWith('.اذاعة') || cleanText.startsWith('اذاعة')) {
                 if (!isFromMe) return;
 
@@ -590,7 +733,7 @@ async function startBot() {
                     return;
                 }
 
-                const allJids = Object.keys(subscribers);
+                const allJids = Array.from(new Set([...Object.keys(subscribers), ...Object.keys(hadithSubscribers)]));
                 await sock.sendMessage(targetJid, { text: `📢 جاري بدء الإذاعة لـ (${allJids.length}) مشترك ومجموعة...` }, { quoted: msg });
 
                 let success = 0;
