@@ -289,17 +289,35 @@ async function getJson(url) {
     return res.json();
 }
 
+// دالة جغرافية محسنة وشاملة لمنع التداخل بين المدن والدول
 async function getPlace(cityName) {
     try {
+        const cleanName = cityName.trim().toLowerCase();
+
+        // خرائط مباشرة وتعيين استباقي للمدن الشهيرة لتفادي أي أخطاء من API
+        const knownCities = {
+            'الخرطوم': { name: 'الخرطوم', country: 'السودان', latitude: 15.5007, longitude: 32.5599, timezone: 'Africa/Khartoum' },
+            'خرطوم': { name: 'الخرطوم', country: 'السودان', latitude: 15.5007, longitude: 32.5599, timezone: 'Africa/Khartoum' },
+            'khartoum': { name: 'الخرطوم', country: 'السودان', latitude: 15.5007, longitude: 32.5599, timezone: 'Africa/Khartoum' }
+        };
+
+        if (knownCities[cleanName]) {
+            return knownCities[cleanName];
+        }
+
+        // البحث العادي عبر API مع استرجاع 10 نتائج وترتيبها حسب الثقل الجغرافي
         const j = await getJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityName)}&count=10&language=ar`);
         if (!j.results || j.results.length === 0) return null;
-        
+
+        // 1. إعطاء أولوية مطلقة للعواصم الإدارية والدولية (PPLC)
         const capital = j.results.find(r => r.feature_code === 'PPLC');
         if (capital) return capital;
 
+        // 2. اختيار عواصم المناطق والمحافظات الرئيسية (PPLA / PPLA2)
         const majorCity = j.results.find(r => r.feature_code && r.feature_code.startsWith('PPLA'));
         if (majorCity) return majorCity;
 
+        // 3. النتيجة العادية الأولى عند عدم وجود تصنيف خاص
         return j.results[0];
     } catch (e) { 
         return null; 
@@ -430,7 +448,7 @@ function startPrayerCheckLoop(sock) {
                     if (currentTotalMin === eveningAzkarMin && !sentReminders.has(keyEveningAzkar)) {
                         sentReminders.add(keyEveningAzkar);
                         await sock.sendMessage(jid, {
-                            text: `🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
+                            text: ````🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
                         });
                     }
                 }
@@ -735,4 +753,3 @@ async function startBot() {
 }
 
 startBot();
- 
