@@ -109,7 +109,7 @@ async function saveAuthToFirebase() {
 }
 
 // ================== 3. الأدعية والأحاديث والتوقيت ==================
-const HADITH_LIST = [
+const BACKUP_HADITHS = [
     { hadith: "«إِنَّ الصَّلَاةَ كَانَتْ عَلَى الْمُؤْمِنِينَ كِتَابًا مَوْقُوتًا»", source: "سورة النساء - آية 103" },
     { hadith: "«بُنِيَ الإِسْلاَمُ عَلَى خَمْسٍ: شَهَادَةِ أَنْ لاَ إِلَهَ إِلاَّ اللَّهُ وَأَنَّ مُحَمَّدًا رَسُولُ اللَّهِ، وَإِقَامِ الصَّلاَةِ، وَإِيتَاءِ الزَّكَاةِ، وَالحَجِّ، وَصَوْمِ رَمَضَانَ»", source: "صحيح البخاري" },
     { hadith: "«سُئِلَ النَّبِيُّ ﷺ: أَيُّ الأَعْمَالِ أَفْضَلُ؟ قَالَ: الصَّلاَةُ لِوَقْتِهَا»", source: "متفق عليه" },
@@ -126,9 +126,40 @@ function getRandomItem(arr) {
     return arr[Math.floor(Math.random() * arr.length)];
 }
 
-function getRandomHadith() {
-    const item = getRandomItem(HADITH_LIST);
-    return `📜 *حديث اليوم:*\n${item.hadith}\n📚 *المصدر:* ${item.source}`;
+// دالة جلب حديث نبوي شريف من موسوعة HadeethEnc الموثوقة
+async function getRandomHadith() {
+    try {
+        const categories = [2, 3, 4, 5]; 
+        const randomCat = getRandomItem(categories);
+
+        const res = await fetch(`https://hadeethenc.com/api/v1/hadeeths/list/?language=ar&category_id=${randomCat}&page=1&per_page=20`, {
+            signal: AbortSignal.timeout(5000)
+        });
+
+        if (res.ok) {
+            const data = await res.json();
+            if (data && data.data && data.data.length > 0) {
+                const randomItem = getRandomItem(data.data);
+                
+                const detailRes = await fetch(`https://hadeethenc.com/api/v1/hadeeths/one/?language=ar&id=${randomItem.id}`, {
+                    signal: AbortSignal.timeout(5000)
+                });
+
+                if (detailRes.ok) {
+                    const detailData = await detailRes.json();
+                    let text = `📜 *حديث اليوم (من موسوعة HadeethEnc):*\n«${detailData.hadeeth.trim()}»`;
+                    if (detailData.attribution) text += `\n\n📚 *المصدر:* ${detailData.attribution}`;
+                    if (detailData.grade) text += `\n✨ *درجة الحديث:* ${detailData.grade}`;
+                    return text;
+                }
+            }
+        }
+    } catch (e) {
+        // في حال بطء الشبكة يتم الاعتماد على حديث احتياطي
+    }
+
+    const backup = getRandomItem(BACKUP_HADITHS);
+    return `📜 *حديث اليوم:*\n${backup.hadith}\n📚 *المصدر:* ${backup.source}`;
 }
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -265,7 +296,7 @@ function startPrayerCheckLoop(sock) {
                 if (!rawTimings) continue;
 
                 const dateObj = getFormattedDate(tz);
-                const hadithText = getRandomHadith();
+                const hadithText = await getRandomHadith();
 
                 const prayersToCheck = [
                     { name: 'الفجر', key: 'Fajr' },
@@ -448,9 +479,10 @@ async function startBot() {
 
                     const dateObj = getFormattedDate(tz);
                     const timingsSchedule = formatTimingsSchedule(rawTimings, tz);
+                    const hadithText = await getRandomHadith();
 
                     await sock.sendMessage(targetJid, {
-                        text: `✅ *تم الاشتراك بنجاح!* ✨\n\n📍 *المدينة:* ${place.name} (${place.country || ''})\n\n${dateObj.fullText}\n\n${timingsSchedule}\n\n───────────────\n${getRandomHadith()}`
+                        text: `✅ *تم الاشتراك بنجاح!* ✨\n\n📍 *المدينة:* ${place.name} (${place.country || ''})\n\n${dateObj.fullText}\n\n${timingsSchedule}\n\n───────────────\n${hadithText}`
                     }, { quoted: msg });
                 }
             }
