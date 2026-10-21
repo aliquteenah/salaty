@@ -3,15 +3,20 @@ import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaile
 import pino from 'pino';
 import fs from 'fs';
 import path from 'path';
+import axios from 'axios';
+import ffmpeg from 'fluent-ffmpeg';
 import { initializeApp } from 'firebase/app';
 import { getDatabase, ref, set, get, child, remove } from 'firebase/database';
+
+// تعيين مسار ffmpeg
+ffmpeg.setFfmpegPath('ffmpeg');
 
 // ================== 1. خادم Web وميزة منع الخمول ==================
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-    res.send('🕌 البوت يعمل بنجاح وعلى مدار 24 ساعة ومربوط بـ Firebase!');
+    res.send('🕌 البوت الشامل يعمل بنجاح ومربوط بـ Firebase!');
 });
 
 app.listen(PORT, () => {
@@ -40,6 +45,8 @@ if (!fs.existsSync(AUTH_DIR)) {
 
 let subscribers = {};
 let hadithSubscribers = {};
+const quranState = {};
+const quranTimers = {};
 
 async function restoreSubscribersFromFirebase() {
     try {
@@ -47,13 +54,11 @@ async function restoreSubscribersFromFirebase() {
         const snapshot = await get(child(dbRef, 'subscribers'));
         if (snapshot.exists()) {
             subscribers = snapshot.val() || {};
-            console.log(`✅ تم استرجاع (${Object.keys(subscribers).length}) مشترك/مجموعة من Firebase بنجاح!`);
         }
         
         const hadithSnap = await get(child(dbRef, 'hadith_subscribers'));
         if (hadithSnap.exists()) {
             hadithSubscribers = hadithSnap.val() || {};
-            console.log(`✅ تم استرجاع (${Object.keys(hadithSubscribers).length}) اشتراك أحاديث دورية بنجاح!`);
         }
     } catch (e) {
         console.log("❌ خطأ جلب المشتركين من Firebase:", e.message);
@@ -83,7 +88,6 @@ async function restoreAuthFromFirebase() {
                 const fileBuf = Buffer.from(contentBase64, 'base64');
                 fs.writeFileSync(path.join(AUTH_DIR, filename), fileBuf);
             }
-            console.log("✅ تم استرجاع جلسة الواتساب من Firebase بنجاح!");
         }
     } catch (e) {
         console.log("❌ خطأ استرجاع الجلسة من Firebase:", e.message);
@@ -110,7 +114,81 @@ async function saveAuthToFirebase() {
     }
 }
 
-// ================== 3. الأدعية والأحاديث والتوقيت ==================
+// ================== 3. إعدادات وقائمة القراء الصوتية ==================
+const RECITERS = [
+    { id: 1, name: 'مشاري العفاسي', edition: 'ar.alafasy' },
+    { id: 2, name: 'عبد الباسط عبد الصمد (مرتل)', edition: 'ar.abdulbasitmurattal' },
+    { id: 3, name: 'محمود خليل الحصري', edition: 'ar.husary' },
+    { id: 4, name: 'سعود الشريم', edition: 'ar.saoodshuraym' },
+    { id: 5, name: 'أحمد بن علي العجمي', edition: 'ar.ahmedajamy' },
+    { id: 6, name: 'ماهر المعيقلي', edition: 'ar.mahermuaiqly' },
+    { id: 7, name: 'عبد الرحمن السديس', edition: 'ar.abdurrahmansudais' },
+    { id: 8, name: 'محمد صديق المنشاوي (مرتل)', edition: 'ar.minshawi' },
+    { id: 9, name: 'سعد الغامدي', edition: 'ar.ghamadi' },
+    { id: 10, name: 'أبو بكر الشاطري', edition: 'ar.shaatree' },
+    { id: 11, name: 'ياسر الدوسري', edition: 'ar.yasserdosussary' },
+    { id: 12, name: 'ناصر القطامي', edition: 'ar.naserqatami' },
+    { id: 13, name: 'محمد أيوب', edition: 'ar.muhammadayyoub' },
+    { id: 14, name: 'عبد الله جهني', edition: 'ar.abdullahbasfar' },
+    { id: 15, name: 'علي الحذيفي', edition: 'ar.hudhaify' },
+    { id: 16, name: 'محمود علي البنا', edition: 'ar.mahmoudalibanna' },
+    { id: 17, name: 'صلاح بو خاطر', edition: 'ar.salahbukhatir' },
+    { id: 18, name: 'محمد المحيسني', edition: 'ar.muhammadalmuhasny' },
+    { id: 19, name: 'هاني الرفاعي', edition: 'ar.hanirifai' },
+    { id: 20, name: 'مصطفى إسماعيل', edition: 'ar.mustafaismail' }
+];
+
+function convertMp3ToOggOpus(inputPath, outputPath) {
+    return new Promise((resolve, reject) => {
+        ffmpeg(inputPath)
+            .toFormat('ogg')
+            .audioCodec('libopus')
+            .on('end', () => resolve(outputPath))
+            .on('error', (err) => reject(err))
+            .save(outputPath);
+    });
+}
+
+async function sendAyahAndAudio(sock, from, reciter) {
+    const randomAyah = Math.floor(Math.random() * 6236) + 1;
+    const url = `https://api.alquran.cloud/v1/ayah/${randomAyah}/${reciter.edition}`;
+    
+    const tempMp3Path = path.join(process.cwd(), `temp_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp3`);
+    const tempOggPath = path.join(process.cwd(), `temp_${Date.now()}_${Math.floor(Math.random() * 1000)}.ogg`);
+
+    try {
+        const response = await axios.get(url);
+        const data = response.data.data;
+
+        const caption = `📖 *سورة ${data.surah.name} - الآية (${data.numberInSurah})*\n\n﴿ ${data.text} ﴾`;
+        const audioUrl = data.audio;
+
+        await sock.sendMessage(from, { text: caption });
+
+        const audioResponse = await axios({
+            method: 'get',
+            url: audioUrl,
+            responseType: 'arraybuffer'
+        });
+        fs.writeFileSync(tempMp3Path, audioResponse.data);
+
+        await convertMp3ToOggOpus(tempMp3Path, tempOggPath);
+
+        await sock.sendMessage(from, { 
+            audio: fs.readFileSync(tempOggPath), 
+            mimetype: 'audio/ogg; codecs=opus',
+            ptt: true
+        });
+
+    } catch (err) {
+        console.error('خطأ أثناء إرسال صوت القرآن:', err.message);
+    } finally {
+        if (fs.existsSync(tempMp3Path)) fs.unlinkSync(tempMp3Path);
+        if (fs.existsSync(tempOggPath)) fs.unlinkSync(tempOggPath);
+    }
+}
+
+// ================== 4. الأدعية والأحاديث والتوقيت ==================
 const BACKUP_HADITHS = [
     { hadith: "«إِنَّ الصَّلَاةَ كَانَتْ عَلَى الْمُؤْمِنِينَ كِتَابًا مَوْقُوتًا»", source: "سورة النساء - آية 103" },
     { hadith: "«بُنِيَ الإِسْلاَمُ عَلَى خَمْسٍ: شَهَادَةِ أَنْ لاَ إِلَهَ إِلاَّ اللَّهُ وَأَنَّ مُحَمَّدًا رَسُولُ اللَّهِ، وَإِقَامِ الصَّلاَةِ، وَإِيتَاءِ الزَّكَاةِ، وَالحَجِّ، وَصَوْمِ رَمَضَانَ»", source: "صحيح البخاري" },
@@ -289,7 +367,6 @@ async function getPlace(cityName) {
     try {
         const cleanName = cityName.trim().toLowerCase();
 
-        // حل صريح لمنع خطأ الخرطوم
         const knownCities = {
             'الخرطوم': { name: 'الخرطوم', country: 'السودان', latitude: 15.5007, longitude: 32.5599, timezone: 'Africa/Khartoum' },
             'خرطوم': { name: 'الخرطوم', country: 'السودان', latitude: 15.5007, longitude: 32.5599, timezone: 'Africa/Khartoum' },
@@ -303,7 +380,6 @@ async function getPlace(cityName) {
         const j = await getJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityName)}&count=10&language=ar`);
         if (!j.results || j.results.length === 0) return null;
 
-        // إعطاء أولوية للعواصم والمدن الرئيسية كقاعدة عامة لجميع الدول
         const capital = j.results.find(r => r.feature_code === 'PPLC');
         if (capital) return capital;
 
@@ -323,7 +399,7 @@ async function getPrayerTimings(lat, lng, timezone) {
     } catch (e) { return null; }
 }
 
-// ================== 4. محرك التنبيهات الدورية ==================
+// ================== 5. محرك التنبيهات الدورية ==================
 const sentReminders = new Set();
 
 function startPrayerCheckLoop(sock) {
@@ -440,7 +516,7 @@ function startPrayerCheckLoop(sock) {
                     if (currentTotalMin === eveningAzkarMin && !sentReminders.has(keyEveningAzkar)) {
                         sentReminders.add(keyEveningAzkar);
                         await sock.sendMessage(jid, {
-                            text: ```🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
+                            text: ``🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
                         });
                     }
                 }
@@ -455,7 +531,7 @@ function startPrayerCheckLoop(sock) {
     }, 30 * 1000);
 }
 
-// ================== 5. تشغيل الواتساب والمعالجة الشاملة ==================
+// ================== 6. تشغيل الواتساب والمعالجة الشاملة ==================
 const PHONE_NUMBER = "966551138192";
 
 async function startBot() {
@@ -519,6 +595,112 @@ async function startBot() {
             const cleanText = text.toLowerCase();
             const isFromMe = msg.key.fromMe;
 
+            // 1. أمر إيقاف الحديث مخصص بشكل منفصل
+            if (cleanText === 'ايقاف الحديث' || cleanText === 'إيقاف الحديث' || cleanText === 'الغاء الحديث' || cleanText === 'إلغاء الحديث') {
+                if (hadithSubscribers[targetJid]) {
+                    delete hadithSubscribers[targetJid];
+                    await saveSubscribersToFirebase();
+                    await sock.sendMessage(targetJid, { text: `🛑 *تم إيقاف التذكير الدوري بالأحاديث بنجاح.*` }, { quoted: msg });
+                } else {
+                    await sock.sendMessage(targetJid, { text: `ℹ️ لا يوجد تذكير دوري بالأحاديث مفعّل لديك حالياً.` }, { quoted: msg });
+                }
+                return;
+            }
+
+            // 2. أمر إيقاف القرآن مخصص بشكل منفصل
+            if (cleanText === 'ايقاف القران' || cleanText === 'إيقاف القرآن' || cleanText === 'إيقاف القران' || cleanText === 'الغاء القران' || cleanText === 'إلغاء القرآن') {
+                if (quranTimers[targetJid]) {
+                    clearInterval(quranTimers[targetJid]);
+                    delete quranTimers[targetJid];
+                    await sock.sendMessage(targetJid, { text: `🛑 *تم إيقاف الإرسال التلقائي للقرآن الصوتي بنجاح.*` }, { quoted: msg });
+                } else {
+                    await sock.sendMessage(targetJid, { text: `ℹ️ لا يوجد إرسال تلقائي للقرآن الصوتي مفعّل لديك حالياً.` }, { quoted: msg });
+                }
+                return;
+            }
+
+            // 3. أمر إيقاف عام لشامل الخدمتين فقط إذا كتب "إيقاف" مفردة
+            if (cleanText === 'إيقاف' || cleanText === 'ايقاف') {
+                let stoppedAny = false;
+
+                if (quranTimers[targetJid]) {
+                    clearInterval(quranTimers[targetJid]);
+                    delete quranTimers[targetJid];
+                    stoppedAny = true;
+                }
+
+                if (hadithSubscribers[targetJid]) {
+                    delete hadithSubscribers[targetJid];
+                    await saveSubscribersToFirebase();
+                    stoppedAny = true;
+                }
+
+                if (stoppedAny) {
+                    await sock.sendMessage(targetJid, { text: '🛑 تم إيقاف جميع التذكيرات التلقائية (الأحاديث والقرآن الصوتي) بنجاح.' }, { quoted: msg });
+                } else {
+                    await sock.sendMessage(targetJid, { text: 'ℹ️ لا يوجد تذكير تلقائي مفعّل لديك حالياً.' }, { quoted: msg });
+                }
+                return;
+            }
+
+            // عرض قائمة القراء والقرآن الصوتي
+            if (cleanText === 'صوت' || cleanText === 'قرآن' || cleanText === 'قران' || cleanText === 'آية' || cleanText === 'ايه') {
+                let menuText = "🎧 *اختر القارئ المفضل وطريقة الإرسال:*\n\n";
+                RECITERS.forEach(r => {
+                    menuText += `*[ ${r.id} ]* ${r.name}\n`;
+                });
+                menuText += "\n📌 *طرق الرد:*\n";
+                menuText += "1️⃣ لإرسال آية واحدة الآن: اكتب رقم القارئ فقط (مثال: `1`).\n";
+                menuText += "2️⃣ للإرسال التلقائي المكرر: اكتب رقم القارئ ثم مسافة ثم الدقائق مع حرف د (مثال: `1 2د` أو `5 10د`).\n\n";
+                menuText += "🛑 لإيقاف تكرار القرآن فقط أرسل: *إيقاف القرآن*\n";
+                menuText += "🛑 لإيقاف تكرار الحديث فقط أرسل: *إيقاف الحديث*";
+
+                quranState[targetJid] = { step: 'WAITING_FOR_RECITER' };
+                await sock.sendMessage(targetJid, { text: menuText }, { quoted: msg });
+                return;
+            }
+
+            // اختيار القارئ والتلاوة
+            if (quranState[targetJid] && quranState[targetJid].step === 'WAITING_FOR_RECITER') {
+                const match = text.match(/^(\d+)(?:\s+(\d+)د)?$/i);
+
+                if (match) {
+                    const selectedId = parseInt(match[1], 10);
+                    const minutes = match[2] ? parseInt(match[2], 10) : null;
+                    const reciter = RECITERS.find(r => r.id === selectedId);
+
+                    if (reciter) {
+                        if (quranTimers[targetJid]) {
+                            clearInterval(quranTimers[targetJid]);
+                            delete quranTimers[targetJid];
+                        }
+
+                        if (minutes && minutes > 0) {
+                            await sock.sendMessage(targetJid, { 
+                                text: `⏱️ تم تفعيل الإرسال التلقائي بصوت *${reciter.name}* كل *${minutes}* دقيقة.\n\n🛑 لإيقاف التلاوات أرسل: *إيقاف القرآن*` 
+                            }, { quoted: msg });
+
+                            await sendAyahAndAudio(sock, targetJid, reciter);
+
+                            quranTimers[targetJid] = setInterval(async () => {
+                                await sendAyahAndAudio(sock, targetJid, reciter);
+                            }, minutes * 60 * 1000);
+
+                        } else {
+                            await sock.sendMessage(targetJid, { text: `⏳ جاري جلب التلاوة بصوت *${reciter.name}*...` }, { quoted: msg });
+                            await sendAyahAndAudio(sock, targetJid, reciter);
+                        }
+
+                        delete quranState[targetJid];
+                        return;
+                    } else {
+                        await sock.sendMessage(targetJid, { text: '❌ رقم قارئ غير صحيح، يرجى اختيار رقم من القائمة.' }, { quoted: msg });
+                        return;
+                    }
+                }
+            }
+
+            // أوامر المطورين والأدوات الخاصة بقواعد البيانات
             if (cleanText.startsWith('.تنظيف') || cleanText.startsWith('.حذف_قاعدة') || cleanText.startsWith('.مسح_قاعدة')) {
                 if (!isFromMe) return;
 
@@ -566,24 +748,13 @@ async function startBot() {
                     await saveSubscribersToFirebase();
 
                     await sock.sendMessage(targetJid, {
-                        text: `✅ *تم تفعيل التذكير الدوري بالأحاديث الشريفة!*\n\nسيتم إرسال حديث نبوي شريف مع الشرح كل *${mins} دقيقة* تلقائياً. 📜✨\n\n_لإيقاف التذكير في أي وقت أرسل:_ *ايقاف الحديث*`
+                        text: `✅ *تم تفعيل التذكير الدوري بالأحاديث الشريفة!*\n\nسيتم إرسال حديث نبوي شريف مع الشرح كل *${mins} دقيقة* تلقائياً. 📜✨\n\n_لإيقاف التذكير بالأحاديث في أي وقت أرسل:_ *إيقاف الحديث*`
                     }, { quoted: msg });
 
                     const firstHadith = await getHadithWithExplanationOnly();
                     await sock.sendMessage(targetJid, { text: firstHadith });
                     return;
                 }
-            }
-
-            else if (cleanText === 'ايقاف الحديث' || cleanText === 'إيقاف الحديث' || cleanText === 'الغاء الحديث' || cleanText === 'إلغاء الحديث') {
-                if (hadithSubscribers[targetJid]) {
-                    delete hadithSubscribers[targetJid];
-                    await saveSubscribersToFirebase();
-                    await sock.sendMessage(targetJid, { text: `🛑 *تم إيقاف التذكير الدوري بالأحاديث بنجاح.*` }, { quoted: msg });
-                } else {
-                    await sock.sendMessage(targetJid, { text: `لا يوجد تذكير دوري بالأحاديث مفعّل حالياً.` }, { quoted: msg });
-                }
-                return;
             }
 
             if (cleanText.startsWith('اشتراك')) {
@@ -687,7 +858,7 @@ async function startBot() {
 
             else if (cleanText === '.مساعدة' || cleanText === 'مساعدة' || cleanText === 'اوامر' || cleanText === 'الأوامر') {
                 await sock.sendMessage(targetJid, {
-                    text: `🕌 *بوت التذكير والإشعار الإسلامي الشامل*\n\n• *اشتراك اسم_المدينة* ➔ الاشتراك بمدينة معينة (مثال: اشتراك جازان).\n• *صلاتي* أو *مواقتي* ➔ عرض مواقيت اليوم والتاريخ للمدينة والصلاة القادمة.\n• *تعديل اسم_المدينة* ➔ تغيير المدينة بسهولة.\n• *إلغاء الاشتراك* ➔ لإيقاف استقبال تنبيهات الصلاة.\n• *حديث 2د* أو *حديث 10د* ➔ تفعيل تذكير بالأحاديث والشرح كل عدد دقائق محدد.\n• *ايقاف الحديث* ➔ لإيقاف التذكير الدوري بالأحاديث.\n• *فحص* ➔ للتأكد من جاهزية واستجابة البوت.\n\n⚙️ *أوامر المطور:* \n• *.الاحصائيات* ➔ عرض عدد المشتركين والمدن.\n• *.اذاعة النص* ➔ إرسال رسالة لكل المشتركين والمجموعات.\n• *.تنظيف* ➔ لحذف الجلسات التالفة أو مسح العقد غير المرغوب فيها من Firebase.`
+                    text: `🕌 *بوت التذكير والإشعار الإسلامي الشامل*\n\n• *اشتراك اسم_المدينة* ➔ الاشتراك بمواقيت الصلاة.\n• *صلاتي* أو *مواقتي* ➔ عرض جدول أوقات اليوم.\n• *صوت* أو *قرآن* ➔ اختيار قارئ وسماع آيات قرآنية صوتية (فورية أو مكررة).\n• *حديث 2د* ➔ تفعيل تذكير بالأحاديث والشرح كل عدد دقائق محدد.\n• *إيقاف القرآن* ➔ إيقاف الإرسال التلقائي للتلاوات الصوتية فقط.\n• *إيقاف الحديث* ➔ إيقاف التذكير التلقائي بالأحاديث فقط.\n• *إيقاف* ➔ إيقاف كافة التكرارات التلقائية معاً.\n• *فحص* ➔ للتأكد من حالة اتصال البوت.\n\n⚙️ *أوامر المطور:* \n• *.الاحصائيات* ➔ عرض عدد المشتركين والمدن.\n• *.اذاعة النص* ➔ إرسال رسالة لجميع المشتركين والمجموعات.\n• *.تنظيف* ➔ لحذف الجلسات أو مسح البيانات القديمة.`
                 }, { quoted: msg });
             }
 
@@ -745,4 +916,3 @@ async function startBot() {
 }
 
 startBot();
- 
