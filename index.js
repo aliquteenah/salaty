@@ -4,12 +4,10 @@ import pino from 'pino';
 import fs from 'fs';
 import path from 'path';
 import axios from 'axios';
+import fetch from 'node-fetch';
 import ffmpeg from 'fluent-ffmpeg';
 import { initializeApp } from 'firebase/app';
 import { getDatabase, ref, set, get, child, remove } from 'firebase/database';
-
-// تعيين مسار ffmpeg
-ffmpeg.setFfmpegPath('ffmpeg');
 
 // ================== 1. خادم Web وميزة منع الخمول ==================
 const app = express();
@@ -172,13 +170,21 @@ async function sendAyahAndAudio(sock, from, reciter) {
         });
         fs.writeFileSync(tempMp3Path, audioResponse.data);
 
-        await convertMp3ToOggOpus(tempMp3Path, tempOggPath);
-
-        await sock.sendMessage(from, { 
-            audio: fs.readFileSync(tempOggPath), 
-            mimetype: 'audio/ogg; codecs=opus',
-            ptt: true
-        });
+        try {
+            await convertMp3ToOggOpus(tempMp3Path, tempOggPath);
+            await sock.sendMessage(from, { 
+                audio: fs.readFileSync(tempOggPath), 
+                mimetype: 'audio/ogg; codecs=opus',
+                ptt: true
+            });
+        } catch (e) {
+            // في حال عدم توفر ffmpeg في الخادم يتم الإرسال كملف mp3 تلقائياً بدلاً من انهيار البوت
+            await sock.sendMessage(from, { 
+                audio: fs.readFileSync(tempMp3Path), 
+                mimetype: 'audio/mp4',
+                ptt: false
+            });
+        }
 
     } catch (err) {
         console.error('خطأ أثناء إرسال صوت القرآن:', err.message);
@@ -211,18 +217,14 @@ async function getRandomHadith() {
         const categories = [2, 3, 4, 5]; 
         const randomCat = getRandomItem(categories);
 
-        const res = await fetch(`https://hadeethenc.com/api/v1/hadeeths/list/?language=ar&category_id=${randomCat}&page=1&per_page=20`, {
-            signal: AbortSignal.timeout(5000)
-        });
+        const res = await fetch(`https://hadeethenc.com/api/v1/hadeeths/list/?language=ar&category_id=${randomCat}&page=1&per_page=20`);
 
         if (res.ok) {
             const data = await res.json();
             if (data && data.data && data.data.length > 0) {
                 const randomItem = getRandomItem(data.data);
                 
-                const detailRes = await fetch(`https://hadeethenc.com/api/v1/hadeeths/one/?language=ar&id=${randomItem.id}`, {
-                    signal: AbortSignal.timeout(5000)
-                });
+                const detailRes = await fetch(`https://hadeethenc.com/api/v1/hadeeths/one/?language=ar&id=${randomItem.id}`);
 
                 if (detailRes.ok) {
                     const detailData = await detailRes.json();
@@ -249,18 +251,14 @@ async function getHadithWithExplanationOnly() {
         const categories = [2, 3, 4, 5];
         const randomCat = getRandomItem(categories);
 
-        const res = await fetch(`https://hadeethenc.com/api/v1/hadeeths/list/?language=ar&category_id=${randomCat}&page=1&per_page=25`, {
-            signal: AbortSignal.timeout(5000)
-        });
+        const res = await fetch(`https://hadeethenc.com/api/v1/hadeeths/list/?language=ar&category_id=${randomCat}&page=1&per_page=25`);
 
         if (res.ok) {
             const data = await res.json();
             if (data && data.data && data.data.length > 0) {
                 const randomItem = getRandomItem(data.data);
 
-                const detailRes = await fetch(`https://hadeethenc.com/api/v1/hadeeths/one/?language=ar&id=${randomItem.id}`, {
-                    signal: AbortSignal.timeout(5000)
-                });
+                const detailRes = await fetch(`https://hadeethenc.com/api/v1/hadeeths/one/?language=ar&id=${randomItem.id}`);
 
                 if (detailRes.ok) {
                     const detailData = await detailRes.json();
@@ -358,7 +356,7 @@ function getFormattedDate(timeZone) {
 }
 
 async function getJson(url) {
-    const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    const res = await fetch(url);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     return res.json();
 }
