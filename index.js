@@ -288,7 +288,7 @@ function fmt12(timeStr) {
     if (isNaN(h) || isNaN(mi)) return '--:--';
     const period = h >= 12 ? 'م' : 'ص';
     const h12 = h % 12 || 12;
-    return `${h12}:${pad(mi)}${period}`;
+    return `${h12}:${pad(mi)} ${period}`;
 }
 
 function fmtDur(min) {
@@ -342,7 +342,7 @@ function formatTimingsSchedule(rawTimings = {}, timeZone) {
 
     const lines = list.map(item => {
         const rawTime = rawTimings?.[item.key] || '';
-        return `${item.icon} ${item.name}:${fmt12(rawTime)}`;
+        return `${item.icon} ${item.name}: ${fmt12(rawTime)}`;
     }).join('\n');
 
     return `${lines}\n\n${getNextPrayerInfo(rawTimings, timeZone)}`;
@@ -516,7 +516,7 @@ function startPrayerCheckLoop(sock) {
                     if (currentTotalMin === eveningAzkarMin && !sentReminders.has(keyEveningAzkar)) {
                         sentReminders.add(keyEveningAzkar);
                         await sock.sendMessage(jid, {
-                            text: ``🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
+                            text: `🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
                         });
                     }
                 }
@@ -595,7 +595,7 @@ async function startBot() {
             const cleanText = text.toLowerCase();
             const isFromMe = msg.key.fromMe;
 
-            // 1. أمر إيقاف الحديث مخصص بشكل منفصل
+            // 1. أمر إيقاف الحديث مخصص
             if (cleanText === 'ايقاف الحديث' || cleanText === 'إيقاف الحديث' || cleanText === 'الغاء الحديث' || cleanText === 'إلغاء الحديث') {
                 if (hadithSubscribers[targetJid]) {
                     delete hadithSubscribers[targetJid];
@@ -607,7 +607,7 @@ async function startBot() {
                 return;
             }
 
-            // 2. أمر إيقاف القرآن مخصص بشكل منفصل
+            // 2. أمر إيقاف القرآن مخصص
             if (cleanText === 'ايقاف القران' || cleanText === 'إيقاف القرآن' || cleanText === 'إيقاف القران' || cleanText === 'الغاء القران' || cleanText === 'إلغاء القرآن') {
                 if (quranTimers[targetJid]) {
                     clearInterval(quranTimers[targetJid]);
@@ -619,7 +619,7 @@ async function startBot() {
                 return;
             }
 
-            // 3. أمر إيقاف عام لشامل الخدمتين فقط إذا كتب "إيقاف" مفردة
+            // 3. أمر إيقاف عام لشامل الخدمتين
             if (cleanText === 'إيقاف' || cleanText === 'ايقاف') {
                 let stoppedAny = false;
 
@@ -916,3 +916,4 @@ async function startBot() {
 }
 
 startBot();
+ 
