@@ -147,18 +147,28 @@ function convertMp3ToOggOpus(inputPath, outputPath) {
     });
 }
 
-async function sendAyahAndAudio(sock, from, reciter) {
-    const randomAyah = Math.floor(Math.random() * 6236) + 1;
-    const url = `https://api.alquran.cloud/v1/ayah/${randomAyah}/${reciter.edition}`;
+// دالة إرسال آية صوتية وخفيفة (عشوائية أو حسب السورة والآية المحددتين)
+async function sendAyahAndAudio(sock, from, reciter, surahNum = null, ayahNum = null) {
+    let url = '';
+    if (surahNum && ayahNum) {
+        url = `https://api.alquran.cloud/v1/ayah/${surahNum}:${ayahNum}/${reciter.edition}`;
+    } else {
+        const randomAyah = Math.floor(Math.random() * 6236) + 1;
+        url = `https://api.alquran.cloud/v1/ayah/${randomAyah}/${reciter.edition}`;
+    }
     
     const tempMp3Path = path.join(process.cwd(), `temp_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp3`);
     const tempOggPath = path.join(process.cwd(), `temp_${Date.now()}_${Math.floor(Math.random() * 1000)}.ogg`);
 
     try {
         const response = await axios.get(url);
-        const data = response.data.data;
+        if (!response.data || !response.data.data) {
+            await sock.sendMessage(from, { text: '❌ تعذر العثور على الآية المطلوبة، يرجى التأكد من رقم السورة والآية.' });
+            return;
+        }
 
-        const caption = `📖 *سورة ${data.surah.name} - الآية (${data.numberInSurah})*\n\n﴿ ${data.text} ﴾`;
+        const data = response.data.data;
+        const caption = `📖 *سورة ${data.surah.name} - الآية (${data.numberInSurah})*\n🎙️ *القارئ:* ${reciter.name}\n\n﴿ ${data.text} ﴾`;
         const audioUrl = data.audio;
 
         await sock.sendMessage(from, { text: caption });
@@ -178,7 +188,6 @@ async function sendAyahAndAudio(sock, from, reciter) {
                 ptt: true
             });
         } catch (e) {
-            // في حال عدم توفر ffmpeg في الخادم يتم الإرسال كملف mp3 تلقائياً بدلاً من انهيار البوت
             await sock.sendMessage(from, { 
                 audio: fs.readFileSync(tempMp3Path), 
                 mimetype: 'audio/mp4',
@@ -188,6 +197,7 @@ async function sendAyahAndAudio(sock, from, reciter) {
 
     } catch (err) {
         console.error('خطأ أثناء إرسال صوت القرآن:', err.message);
+        await sock.sendMessage(from, { text: '❌ حدث خطأ أثناء جلب الآية، يرجى التأكد من الأرقام المدخلة.' });
     } finally {
         if (fs.existsSync(tempMp3Path)) fs.unlinkSync(tempMp3Path);
         if (fs.existsSync(tempOggPath)) fs.unlinkSync(tempOggPath);
@@ -286,7 +296,7 @@ function fmt12(timeStr) {
     if (isNaN(h) || isNaN(mi)) return '--:--';
     const period = h >= 12 ? 'م' : 'ص';
     const h12 = h % 12 || 12;
-    return `${h12}:${pad(mi)} ${period}`;
+    return `${h12}:${pad(mi)}${period}`;
 }
 
 function fmtDur(min) {
@@ -340,7 +350,7 @@ function formatTimingsSchedule(rawTimings = {}, timeZone) {
 
     const lines = list.map(item => {
         const rawTime = rawTimings?.[item.key] || '';
-        return `${item.icon} ${item.name}: ${fmt12(rawTime)}`;
+        return `${item.icon} ${item.name}:${fmt12(rawTime)}`;
     }).join('\n');
 
     return `${lines}\n\n${getNextPrayerInfo(rawTimings, timeZone)}`;
@@ -514,7 +524,7 @@ function startPrayerCheckLoop(sock) {
                     if (currentTotalMin === eveningAzkarMin && !sentReminders.has(keyEveningAzkar)) {
                         sentReminders.add(keyEveningAzkar);
                         await sock.sendMessage(jid, {
-                            text: `🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
+                            text: ```🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
                         });
                     }
                 }
@@ -647,9 +657,10 @@ async function startBot() {
                 RECITERS.forEach(r => {
                     menuText += `*[ ${r.id} ]* ${r.name}\n`;
                 });
-                menuText += "\n📌 *طرق الرد:*\n";
-                menuText += "1️⃣ لإرسال آية واحدة الآن: اكتب رقم القارئ فقط (مثال: `1`).\n";
-                menuText += "2️⃣ للإرسال التلقائي المكرر: اكتب رقم القارئ ثم مسافة ثم الدقائق مع حرف د (مثال: `1 2د` أو `5 10د`).\n\n";
+                menuText += "\n📌 *طرق الرد الإرسال:*\n";
+                menuText += "1️⃣ لإرسال آية عشوائية واحدة: اكتب رقم القارئ فقط (مثال: `1`).\n";
+                menuText += "2️⃣ لإرسال آية محددة نص وصوت: اكتب رقم القارئ ثم رقم السورة ثم رقم الآية (مثال: `13 2 255` لآية الكرسي بصوت محمد أيوب).\n";
+                menuText += "3️⃣ للإرسال التلقائي المكرر: اكتب رقم القارئ ثم مسافة ثم الدقائق مع حرف د (مثال: `1 2د` أو `5 10د`).\n\n";
                 menuText += "🛑 لإيقاف تكرار القرآن فقط أرسل: *إيقاف القرآن*\n";
                 menuText += "🛑 لإيقاف تكرار الحديث فقط أرسل: *إيقاف الحديث*";
 
@@ -658,13 +669,30 @@ async function startBot() {
                 return;
             }
 
-            // اختيار القارئ والتلاوة
+            // اختيار القارئ والتلاوة (سواء عشوائية، أو آية محددة، أو تكرار بالدقائق)
             if (quranState[targetJid] && quranState[targetJid].step === 'WAITING_FOR_RECITER') {
-                const match = text.match(/^(\d+)(?:\s+(\d+)د)?$/i);
+                const tripleMatch = text.match(/^(\d+)\s+(\d+)\s+(\d+)$/);
+                const repeatMatch = text.match(/^(\d+)(?:\s+(\d+)د)?$/i);
 
-                if (match) {
-                    const selectedId = parseInt(match[1], 10);
-                    const minutes = match[2] ? parseInt(match[2], 10) : null;
+                if (tripleMatch) {
+                    const selectedId = parseInt(tripleMatch[1], 10);
+                    const surahNum = parseInt(tripleMatch[2], 10);
+                    const ayahNum = parseInt(tripleMatch[3], 10);
+                    const reciter = RECITERS.find(r => r.id === selectedId);
+
+                    if (reciter) {
+                        await sock.sendMessage(targetJid, { text: `⏳ جاري جلب سورة رقم (${surahNum}) الآية (${ayahNum}) بصوت *${reciter.name}*...` }, { quoted: msg });
+                        await sendAyahAndAudio(sock, targetJid, reciter, surahNum, ayahNum);
+                        delete quranState[targetJid];
+                        return;
+                    } else {
+                        await sock.sendMessage(targetJid, { text: '❌ رقم قارئ غير صحيح، يرجى اختيار رقم من القائمة.' }, { quoted: msg });
+                        return;
+                    }
+                }
+                else if (repeatMatch) {
+                    const selectedId = parseInt(repeatMatch[1], 10);
+                    const minutes = repeatMatch[2] ? parseInt(repeatMatch[2], 10) : null;
                     const reciter = RECITERS.find(r => r.id === selectedId);
 
                     if (reciter) {
@@ -856,7 +884,7 @@ async function startBot() {
 
             else if (cleanText === '.مساعدة' || cleanText === 'مساعدة' || cleanText === 'اوامر' || cleanText === 'الأوامر') {
                 await sock.sendMessage(targetJid, {
-                    text: `🕌 *بوت التذكير والإشعار الإسلامي الشامل*\n\n• *اشتراك اسم_المدينة* ➔ الاشتراك بمواقيت الصلاة.\n• *صلاتي* أو *مواقتي* ➔ عرض جدول أوقات اليوم.\n• *صوت* أو *قرآن* ➔ اختيار قارئ وسماع آيات قرآنية صوتية (فورية أو مكررة).\n• *حديث 2د* ➔ تفعيل تذكير بالأحاديث والشرح كل عدد دقائق محدد.\n• *إيقاف القرآن* ➔ إيقاف الإرسال التلقائي للتلاوات الصوتية فقط.\n• *إيقاف الحديث* ➔ إيقاف التذكير التلقائي بالأحاديث فقط.\n• *إيقاف* ➔ إيقاف كافة التكرارات التلقائية معاً.\n• *فحص* ➔ للتأكد من حالة اتصال البوت.\n\n⚙️ *أوامر المطور:* \n• *.الاحصائيات* ➔ عرض عدد المشتركين والمدن.\n• *.اذاعة النص* ➔ إرسال رسالة لجميع المشتركين والمجموعات.\n• *.تنظيف* ➔ لحذف الجلسات أو مسح البيانات القديمة.`
+                    text: `🕌 *بوت التذكير والإشعار الإسلامي الشامل*\n\n• *اشتراك اسم_المدينة* ➔ الاشتراك بمواقيت الصلاة.\n• *صلاتي* أو *مواقتي* ➔ عرض جدول أوقات اليوم.\n• *صوت* أو *قرآن* ➔ اختيار قارئ وسماع آيات قرآنية (عشوائية، أو محددة بمثال: \`13 2 255\`, أو مكررة).\n• *حديث 2د* ➔ تفعيل تذكير بالأحاديث والشرح كل عدد دقائق محدد.\n• *إيقاف القرآن* ➔ إيقاف الإرسال التلقائي للتلاوات الصوتية فقط.\n• *إيقاف الحديث* ➔ إيقاف التذكير التلقائي بالأحاديث فقط.\n• *إيقاف* ➔ إيقاف كافة التكرارات التلقائية معاً.\n• *فحص* ➔ للتأكد من حالة اتصال البوت.\n\n⚙️ *أوامر المطور:* \n• *.الاحصائيات* ➔ عرض عدد المشتركين والمدن.\n• *.اذاعة النص* ➔ إرسال رسالة لجميع المشتركين والمجموعات.\n• *.تنظيف* ➔ لحذف الجلسات أو مسح البيانات القديمة.`
                 }, { quoted: msg });
             }
 
