@@ -1,15 +1,15 @@
 {
-  "name": "whatsapp-prayer-bot",
+  "name": "salaty-bot",
   "version": "1.0.0",
-  "description": "WhatsApp Islamic & Prayer Reminder Bot",
-  "main": "index.js",
   "type": "module",
+  "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.18",
-    "express": "^4.19.2",
+    "express": "^4.21.2",
+    "firebase": "^10.12.0",
     "pino": "^9.6.0"
   }
 }
