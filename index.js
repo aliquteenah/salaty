@@ -39,7 +39,7 @@ if (!fs.existsSync(AUTH_DIR)) {
 }
 
 let subscribers = {};
-let hadithSubscribers = {}; // لحفظ اشتراكات الأحاديث المجدولة (حديث Xد)
+let hadithSubscribers = {};
 
 // 1. استرجاع البيانات من Firebase عند الإقلاع
 async function restoreSubscribersFromFirebase() {
@@ -132,7 +132,6 @@ function getRandomItem(arr) {
     return arr[Math.floor(Math.random() * arr.length)];
 }
 
-// دالة جلب حديث نبوي مع الشرح والدرجة والمصدر من HadeethEnc
 async function getRandomHadith() {
     try {
         const categories = [2, 3, 4, 5]; 
@@ -171,7 +170,6 @@ async function getRandomHadith() {
     return `📜 *حديث اليوم:*\n${backup.hadith}\n📚 *المصدر:* ${backup.source}`;
 }
 
-// دالة مخصصة لجلب الحديث مع الشرح فقط (لخدمة التذكير الدوري)
 async function getHadithWithExplanationOnly() {
     try {
         const categories = [2, 3, 4, 5];
@@ -216,7 +214,7 @@ function fmt12(timeStr) {
     if (isNaN(h) || isNaN(mi)) return '--:--';
     const period = h >= 12 ? 'م' : 'ص';
     const h12 = h % 12 || 12;
-    return `${h12}:${pad(mi)}${period}`;
+    return `${h12}:${pad(mi)} ${period}`;
 }
 
 function fmtDur(min) {
@@ -254,7 +252,8 @@ function getNextPrayerInfo(rawTimings = {}, timeZone) {
         }
     }
 
-    return `⏳ القادمة: *${names[nextKey] \vert{}\vert{} 'الفجر'}* بعد ${fmtDur(diffMin)}`;
+    const nextName = names[nextKey] || 'الفجر';
+    return `⏳ القادمة: *${nextName}* بعد ${fmtDur(diffMin)}`;
 }
 
 function formatTimingsSchedule(rawTimings = {}, timeZone) {
@@ -269,7 +268,7 @@ function formatTimingsSchedule(rawTimings = {}, timeZone) {
 
     const lines = list.map(item => {
         const rawTime = rawTimings?.[item.key] || '';
-        return `${item.icon} ${item.name}:${fmt12(rawTime)}`;
+        return `${item.icon} ${item.name}: ${fmt12(rawTime)}`;
     }).join('\n');
 
     return `${lines}\n\n${getNextPrayerInfo(rawTimings, timeZone)}`;
@@ -290,13 +289,11 @@ async function getJson(url) {
     return res.json();
 }
 
-// دالة دقيقة ومحدثة للبحث عن المناطق والمدن وتفادي التداخل الجغرافي
 async function getPlace(cityName) {
     try {
         const j = await getJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityName)}&count=10&language=ar`);
         if (!j.results || j.results.length === 0) return null;
         
-        // إعطاء أولوية مطلقة للعواصم (PPLC) ثم عواصم المحافظات/الولايات الكبرى (PPLA)
         const capital = j.results.find(r => r.feature_code === 'PPLC');
         if (capital) return capital;
 
@@ -324,7 +321,6 @@ function startPrayerCheckLoop(sock) {
         const now = new Date();
         const nowMs = Date.now();
 
-        // 1. فحص إرسال الأحاديث المجدولة كل X دقائق
         for (const [jid, config] of Object.entries(hadithSubscribers)) {
             try {
                 if (!config.intervalMinutes || config.intervalMinutes <= 0) continue;
@@ -344,7 +340,6 @@ function startPrayerCheckLoop(sock) {
             }
         }
 
-        // 2. فحص مواقيت الصلاة والأذكار
         for (const [jid, info] of Object.entries(subscribers)) {
             try {
                 const tz = info.timezone;
@@ -388,7 +383,6 @@ function startPrayerCheckLoop(sock) {
                     const [pH, pM] = timeVal.split(':').map(Number);
                     const prayerTotalMin = pH * 60 + pM;
 
-                    // قبل الصلاة بـ 30 دقيقة
                     const minBefore30 = prayerTotalMin - 30;
                     const key30 = `${jid}_${todayDateStr}_${prayerName}_30min`;
                     if (currentTotalMin === minBefore30 && !sentReminders.has(key30)) {
@@ -398,7 +392,6 @@ function startPrayerCheckLoop(sock) {
                         });
                     }
 
-                    // عند الأذان
                     const keyExact = `${jid}_${todayDateStr}_${prayerName}_exact`;
                     if (currentTotalMin === prayerTotalMin && !sentReminders.has(keyExact)) {
                         sentReminders.add(keyExact);
@@ -407,7 +400,6 @@ function startPrayerCheckLoop(sock) {
                         });
                     }
 
-                    // بين الأذان والإقامة
                     const minAfter10 = prayerTotalMin + 10;
                     const keyIqama = `${jid}_${todayDateStr}_${prayerName}_iqama`;
                     if (currentTotalMin === minAfter10 && !sentReminders.has(keyIqama)) {
@@ -419,7 +411,6 @@ function startPrayerCheckLoop(sock) {
                     }
                 }
 
-                // أذكار الصباح
                 if (rawTimings['Fajr']) {
                     const [fH, fM] = rawTimings['Fajr'].split(' ')[0].split(':').map(Number);
                     const morningAzkarMin = fH * 60 + fM + 20;
@@ -432,7 +423,6 @@ function startPrayerCheckLoop(sock) {
                     }
                 }
 
-                // أذكار المساء
                 if (rawTimings['Asr']) {
                     const [aH, aM] = rawTimings['Asr'].split(' ')[0].split(':').map(Number);
                     const eveningAzkarMin = aH * 60 + aM + 20;
@@ -440,7 +430,7 @@ function startPrayerCheckLoop(sock) {
                     if (currentTotalMin === eveningAzkarMin && !sentReminders.has(keyEveningAzkar)) {
                         sentReminders.add(keyEveningAzkar);
                         await sock.sendMessage(jid, {
-                            text: ```🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
+                            text: `🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
                         });
                     }
                 }
@@ -519,7 +509,6 @@ async function startBot() {
             const cleanText = text.toLowerCase();
             const isFromMe = msg.key.fromMe;
 
-            // 0. أمر المطور الخص بحذف الملفات وعقد Firebase غير المرغوب فيها (.تنظيف اسم_العقدة)
             if (cleanText.startsWith('.تنظيف') || cleanText.startsWith('.حذف_قاعدة') || cleanText.startsWith('.مسح_قاعدة')) {
                 if (!isFromMe) return;
 
@@ -556,7 +545,6 @@ async function startBot() {
                 return;
             }
 
-            // 1. أمر التذكير الدوري بالأحاديث (مثال: حديث 2د أو حديث 10د)
             const hadithMatch = text.match(/^حديث\s*(\d+)\s*د/i);
             if (hadithMatch) {
                 const mins = parseInt(hadithMatch[1], 10);
@@ -577,7 +565,6 @@ async function startBot() {
                 }
             }
 
-            // أمر إيقاف التذكير الدوري بالأحاديث
             else if (cleanText === 'ايقاف الحديث' || cleanText === 'إيقاف الحديث' || cleanText === 'الغاء الحديث' || cleanText === 'إلغاء الحديث') {
                 if (hadithSubscribers[targetJid]) {
                     delete hadithSubscribers[targetJid];
@@ -589,7 +576,6 @@ async function startBot() {
                 return;
             }
 
-            // 2. أمر الاشتراك في أوقات الصلاة
             if (cleanText.startsWith('اشتراك')) {
                 const cityName = text.replace(/^اشتراك/i, '').trim();
                 if (!cityName) {
@@ -631,7 +617,6 @@ async function startBot() {
                 }
             }
 
-            // 3. أمر تعديل المدينة
             else if (cleanText.startsWith('تعديل') || cleanText.startsWith('تغيير')) {
                 const newCity = text.replace(/^(تعديل|تغيير)/i, '').trim();
                 if (!newCity) {
@@ -665,7 +650,6 @@ async function startBot() {
                 }
             }
 
-            // 4. أمر صلاتي / مواقتي
             else if (cleanText === 'صلاتي' || cleanText === 'مواقتي') {
                 const sub = subscribers[targetJid];
                 if (!sub) {
@@ -681,7 +665,6 @@ async function startBot() {
                 }, { quoted: msg });
             }
 
-            // 5. أمر إلغاء الاشتراك في المواقيت
             else if (cleanText === 'إلغاء الاشتراك' || cleanText === 'الغاء الاشتراك' || cleanText === 'إلغاء اشتراك' || cleanText === 'الغاء اشتراك') {
                 if (subscribers[targetJid]) {
                     delete subscribers[targetJid];
@@ -692,19 +675,16 @@ async function startBot() {
                 }
             }
 
-            // 6. أمر المساعدة والأوامر
             else if (cleanText === '.مساعدة' || cleanText === 'مساعدة' || cleanText === 'اوامر' || cleanText === 'الأوامر') {
                 await sock.sendMessage(targetJid, {
                     text: `🕌 *بوت التذكير والإشعار الإسلامي الشامل*\n\n• *اشتراك اسم_المدينة* ➔ الاشتراك بمدينة معينة (مثال: اشتراك جازان).\n• *صلاتي* أو *مواقتي* ➔ عرض مواقيت اليوم والتاريخ للمدينة والصلاة القادمة.\n• *تعديل اسم_المدينة* ➔ تغيير المدينة بسهولة.\n• *إلغاء الاشتراك* ➔ لإيقاف استقبال تنبيهات الصلاة.\n• *حديث 2د* أو *حديث 10د* ➔ تفعيل تذكير بالأحاديث والشرح كل عدد دقائق محدد.\n• *ايقاف الحديث* ➔ لإيقاف التذكير الدوري بالأحاديث.\n• *فحص* ➔ للتأكد من جاهزية واستجابة البوت.\n\n⚙️ *أوامر المطور:* \n• *.الاحصائيات* ➔ عرض عدد المشتركين والمدن.\n• *.اذاعة النص* ➔ إرسال رسالة لكل المشتركين والمجموعات.\n• *.تنظيف* ➔ لحذف الجلسات التالفة أو مسح العقد غير المرغوب فيها من Firebase.`
                 }, { quoted: msg });
             }
 
-            // 7. أمر فحص الاستجابة
             else if (cleanText === 'فحص' || cleanText === 'تست' || cleanText === 'ping') {
                 await sock.sendMessage(targetJid, { text: `✅ البوت شغال ومتصل بنجاح ومربوط بقاعدة بيانات Firebase السحابية!` }, { quoted: msg });
             }
 
-            // 8. أمر الإحصائيات (للمطور)
             else if (cleanText === '.الاحصائيات' || cleanText === 'الاحصائيات' || cleanText === '.إحصائيات') {
                 if (!isFromMe) return;
 
@@ -725,7 +705,6 @@ async function startBot() {
                 }, { quoted: msg });
             }
 
-            // 9. أمر الإذاعة العامة (للمطور)
             else if (cleanText.startsWith('.اذاعة') || cleanText.startsWith('اذاعة')) {
                 if (!isFromMe) return;
 
