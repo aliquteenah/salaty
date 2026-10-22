@@ -45,7 +45,7 @@ let subscribers = {};
 let hadithSubscribers = {};
 const quranState = {};
 const quranTimers = {};
-const sequentialQuranProgress = {}; // لتتبع التقدم الترتيبي للسور
+const sequentialQuranProgress = {};
 
 async function restoreSubscribersFromFirebase() {
     try {
@@ -148,7 +148,6 @@ function convertMp3ToOggOpus(inputPath, outputPath) {
     });
 }
 
-// دالة إرسال آية صوتية (عشوائية، أو آية محددة، أو آية ترتيبية للسورة)
 async function sendAyahAndAudio(sock, from, reciter, surahNum = null, ayahNum = null) {
     let url = '';
     if (surahNum && ayahNum) {
@@ -204,7 +203,7 @@ async function sendAyahAndAudio(sock, from, reciter, surahNum = null, ayahNum = 
             }
         }
 
-        return data; // إرجاع بيانات الآية والسورة لمعرفة مجموع الآيات والوصول للنهاية
+        return data;
 
     } catch (err) {
         console.error('خطأ أصل جلب الآية:', err.message);
@@ -216,7 +215,6 @@ async function sendAyahAndAudio(sock, from, reciter, surahNum = null, ayahNum = 
     }
 }
 
-// دالة التلاوة الترتيبية للسورة
 async function sendNextSequentialAyah(sock, targetJid) {
     const prog = sequentialQuranProgress[targetJid];
     if (!prog) return;
@@ -227,7 +225,6 @@ async function sendNextSequentialAyah(sock, targetJid) {
         const totalAyahs = ayahData.surah.numberOfAyahs;
 
         if (prog.currentAyah >= totalAyahs) {
-            // الوصول إلى آخر آية في السورة
             if (quranTimers[targetJid]) {
                 clearInterval(quranTimers[targetJid]);
                 delete quranTimers[targetJid];
@@ -238,7 +235,7 @@ async function sendNextSequentialAyah(sock, targetJid) {
                 text: `✅ *تمت بحمد الله تلاوة سورة ${ayahData.surah.name} بالكامل (${totalAyahs} آية).* 🎉\n\n_تم إيقاف الإرسال التلقائي بنجاح._` 
             });
         } else {
-            prog.currentAyah++; // الانتقال للآية التالية
+            prog.currentAyah++;
         }
     }
 }
@@ -455,7 +452,7 @@ async function getPrayerTimings(lat, lng, timezone) {
     } catch (e) { return null; }
 }
 
-// ================== 5. محرك التنبيهات الدورية الدقيق ==================
+// ================== 5. محرك التنبيهات الدورية الدقيق (مع الشرط المرن) ==================
 const sentReminders = new Set();
 
 function startPrayerCheckLoop(sock) {
@@ -524,26 +521,29 @@ function startPrayerCheckLoop(sock) {
                     const prayerTotalMin = parseTimeToMinutes(rawTimings[item.key]);
                     if (prayerTotalMin === null) continue;
 
+                    // 1. تنبيه قبل الصلاة بـ 30 دقيقة (الشرط المرن)
                     const minBefore30 = prayerTotalMin - 30;
                     const key30 = `${jid}_${todayDateStr}_${prayerName}_30min`;
-                    if (currentTotalMin === minBefore30 && !sentReminders.has(key30)) {
+                    if (Math.abs(currentTotalMin - minBefore30) <= 1 && !sentReminders.has(key30)) {
                         sentReminders.add(key30);
                         await sock.sendMessage(jid, {
                             text: `⏳ *تنبيه: قرب صلاة ${prayerName}* 🕌\n\n${dateObj.fullText}\n\nتبقّى 30 دقيقة على أذان صلاة *${prayerName}* في مدينة *${info.cityName}* (${info.country}).\n\n✨ _جهز نفسك للصلاة وتهيأ للوضوء_\n\n───────────────\n${hadithText}`
                         });
                     }
 
+                    // 2. تنبيه وقت الأذان (الشرط المرن)
                     const keyExact = `${jid}_${todayDateStr}_${prayerName}_exact`;
-                    if (currentTotalMin === prayerTotalMin && !sentReminders.has(keyExact)) {
+                    if (Math.abs(currentTotalMin - prayerTotalMin) <= 1 && !sentReminders.has(keyExact)) {
                         sentReminders.add(keyExact);
                         await sock.sendMessage(jid, {
                             text: `🕌 *حان الآن أذان صلاة ${prayerName}* 🌸\n\n${dateObj.fullText}\n\nحان الآن موعد أذان صلاة *${prayerName}* حسب التوقيت المحلي لمدينة *${info.cityName}* (${info.country}).\n\n✨ _حيّ على الصلاة.. حيّ على الفلاح_\n\n───────────────\n${hadithText}`
                         });
                     }
 
+                    // 3. تنبيه وقت الإقامة/الدعاء (بعد الأذان بـ 10 دقائق)
                     const minAfter10 = prayerTotalMin + 10;
                     const keyIqama = `${jid}_${todayDateStr}_${prayerName}_iqama`;
-                    if (currentTotalMin === minAfter10 && !sentReminders.has(keyIqama)) {
+                    if (Math.abs(currentTotalMin - minAfter10) <= 1 && !sentReminders.has(keyIqama)) {
                         sentReminders.add(keyIqama);
                         const duaItem = getRandomItem(BETWEEN_AZAN_IQAMA_DUAS);
                         await sock.sendMessage(jid, {
@@ -557,7 +557,7 @@ function startPrayerCheckLoop(sock) {
                     if (fMin !== null) {
                         const morningAzkarMin = fMin + 20;
                         const keyMorningAzkar = `${jid}_${todayDateStr}_morning_azkar`;
-                        if (currentTotalMin === morningAzkarMin && !sentReminders.has(keyMorningAzkar)) {
+                        if (Math.abs(currentTotalMin - morningAzkarMin) <= 1 && !sentReminders.has(keyMorningAzkar)) {
                             sentReminders.add(keyMorningAzkar);
                             await sock.sendMessage(jid, {
                                 text: `🌅 *تذكير بأذكار الصباح* 🌸\n\nأصبحنا وأصبح الملك لله والحمد لله.. لا تنسَ قراءة أذكار الصباح لتحفظك وتنوّر يومك ✨\n\n«أَلا بِذِكْرِ اللَّهِ تَطْمَئِنُّ الْقُلُوبُ»`
@@ -571,7 +571,7 @@ function startPrayerCheckLoop(sock) {
                     if (aMin !== null) {
                         const eveningAzkarMin = aMin + 20;
                         const keyEveningAzkar = `${jid}_${todayDateStr}_evening_azkar`;
-                        if (currentTotalMin === eveningAzkarMin && !sentReminders.has(keyEveningAzkar)) {
+                        if (Math.abs(currentTotalMin - eveningAzkarMin) <= 1 && !sentReminders.has(keyEveningAzkar)) {
                             sentReminders.add(keyEveningAzkar);
                             await sock.sendMessage(jid, {
                                 text: `🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
@@ -729,11 +729,10 @@ async function startBot() {
 
             // اختيار القارئ والتلاوة
             if (quranState[targetJid] && quranState[targetJid].step === 'WAITING_FOR_RECITER') {
-                const sequentialMatch = text.match(/^(\d+)\s+(\d+)د\s+(\d+)$/i); // نمط: 13 2د 2 (تلاوة ترتيبية)
-                const tripleMatch = text.match(/^(\d+)\s+(\d+)\s+(\d+)$/);          // نمط: 13 2 255 (آية واحدة محددة)
-                const repeatMatch = text.match(/^(\d+)(?:\s+(\d+)د)?$/i);            // نمط: 13 2د (آية عشوائية مكررة)
+                const sequentialMatch = text.match(/^(\d+)\s+(\d+)د\s+(\d+)$/i);
+                const tripleMatch = text.match(/^(\d+)\s+(\d+)\s+(\d+)$/);
+                const repeatMatch = text.match(/^(\d+)(?:\s+(\d+)د)?$/i);
 
-                // 1️⃣ النمط الجديد: تلاوة السورة بالترتيب آية تلو الأخرى تلقائياً
                 if (sequentialMatch) {
                     const selectedId = parseInt(sequentialMatch[1], 10);
                     const minutes = parseInt(sequentialMatch[2], 10);
@@ -756,10 +755,8 @@ async function startBot() {
                             text: `📖 تم تفعيل تلاوة سورة رقم (${surahNum}) بالترتيب بصوت *${reciter.name}*، إرسال آية كل *${minutes}* دقيقة تلقائياً حتى نهاية السورة.\n\n🛑 لإيقاف التلاوة في أي وقت أرسل: *إيقاف القرآن*` 
                         }, { quoted: msg });
 
-                        // إرسال الآية الأولى فوراً
                         await sendNextSequentialAyah(sock, targetJid);
 
-                        // بدء المؤقت لتكرار باقي الآيات بالترتيب
                         quranTimers[targetJid] = setInterval(async () => {
                             await sendNextSequentialAyah(sock, targetJid);
                         }, minutes * 60 * 1000);
@@ -772,7 +769,6 @@ async function startBot() {
                     }
                 }
 
-                // 2️⃣ نمط جلب آية محددة فوراً
                 else if (tripleMatch) {
                     const selectedId = parseInt(tripleMatch[1], 10);
                     const surahNum = parseInt(tripleMatch[2], 10);
@@ -790,7 +786,6 @@ async function startBot() {
                     }
                 }
 
-                // 3️⃣ نمط الآية العشوائية المكررة أو المفردة
                 else if (repeatMatch) {
                     const selectedId = parseInt(repeatMatch[1], 10);
                     const minutes = repeatMatch[2] ? parseInt(repeatMatch[2], 10) : null;
@@ -1044,4 +1039,3 @@ async function startBot() {
 }
 
 startBot();
- 
