@@ -45,6 +45,7 @@ let subscribers = {};
 let hadithSubscribers = {};
 const quranState = {};
 const quranTimers = {};
+const sequentialQuranProgress = {}; // لتتبع التقدم الترتيبي للسور
 
 async function restoreSubscribersFromFirebase() {
     try {
@@ -147,6 +148,7 @@ function convertMp3ToOggOpus(inputPath, outputPath) {
     });
 }
 
+// دالة إرسال آية صوتية (عشوائية، أو آية محددة، أو آية ترتيبية للسورة)
 async function sendAyahAndAudio(sock, from, reciter, surahNum = null, ayahNum = null) {
     let url = '';
     if (surahNum && ayahNum) {
@@ -160,46 +162,84 @@ async function sendAyahAndAudio(sock, from, reciter, surahNum = null, ayahNum = 
     const tempOggPath = path.join(process.cwd(), `temp_${Date.now()}_${Math.floor(Math.random() * 1000)}.ogg`);
 
     try {
-        const response = await axios.get(url);
+        const response = await axios.get(url, { timeout: 10000 });
         if (!response.data || !response.data.data) {
-            await sock.sendMessage(from, { text: '❌ تعذر العثور على الآية المطلوبة، يرجى التأكد من رقم السورة والآية.' });
-            return;
+            await sock.sendMessage(from, { text: '❌ تعذر العثور على الآية المطلوبة، يرجى التأكد من الأرقام المدخلة.' });
+            return null;
         }
 
         const data = response.data.data;
-        const caption = `📖 *سورة ${data.surah.name} - الآية (${data.numberInSurah})*\n🎙️ *القارئ:* ${reciter.name}\n\n﴿ ${data.text} ﴾`;
+        const caption = `📖 *سورة ${data.surah.name} - الآية (${data.numberInSurah}/${data.surah.numberOfAyahs})*\n🎙️ *القارئ:* ${reciter.name}\n\n﴿ ${data.text} ﴾`;
         const audioUrl = data.audio;
 
         await sock.sendMessage(from, { text: caption });
 
-        const audioResponse = await axios({
-            method: 'get',
-            url: audioUrl,
-            responseType: 'arraybuffer'
-        });
-        fs.writeFileSync(tempMp3Path, audioResponse.data);
+        if (audioUrl) {
+            try {
+                const audioResponse = await axios({
+                    method: 'get',
+                    url: audioUrl,
+                    responseType: 'arraybuffer',
+                    timeout: 15000
+                });
+                
+                fs.writeFileSync(tempMp3Path, audioResponse.data);
 
-        try {
-            await convertMp3ToOggOpus(tempMp3Path, tempOggPath);
-            await sock.sendMessage(from, { 
-                audio: fs.readFileSync(tempOggPath), 
-                mimetype: 'audio/ogg; codecs=opus',
-                ptt: true
-            });
-        } catch (e) {
-            await sock.sendMessage(from, { 
-                audio: fs.readFileSync(tempMp3Path), 
-                mimetype: 'audio/mp4',
-                ptt: false
-            });
+                try {
+                    await convertMp3ToOggOpus(tempMp3Path, tempOggPath);
+                    await sock.sendMessage(from, { 
+                        audio: fs.readFileSync(tempOggPath), 
+                        mimetype: 'audio/ogg; codecs=opus',
+                        ptt: true
+                    });
+                } catch (e) {
+                    await sock.sendMessage(from, { 
+                        audio: fs.readFileSync(tempMp3Path), 
+                        mimetype: 'audio/mp4',
+                        ptt: false
+                    });
+                }
+            } catch (audioErr) {
+                console.error('⚠️ تعذر تحميل الملف الصوتي للآية:', audioErr.message);
+            }
         }
 
+        return data; // إرجاع بيانات الآية والسورة لمعرفة مجموع الآيات والوصول للنهاية
+
     } catch (err) {
-        console.error('خطأ أثناء إرسال صوت القرآن:', err.message);
-        await sock.sendMessage(from, { text: '❌ حدث خطأ أثناء جلب الآية، يرجى التأكد من الأرقام المدخلة.' });
+        console.error('خطأ أصل جلب الآية:', err.message);
+        await sock.sendMessage(from, { text: '❌ حدث خطأ أثناء جلب الآية، يرجى المحاولة مرة أخرى.' });
+        return null;
     } finally {
         if (fs.existsSync(tempMp3Path)) fs.unlinkSync(tempMp3Path);
         if (fs.existsSync(tempOggPath)) fs.unlinkSync(tempOggPath);
+    }
+}
+
+// دالة التلاوة الترتيبية للسورة
+async function sendNextSequentialAyah(sock, targetJid) {
+    const prog = sequentialQuranProgress[targetJid];
+    if (!prog) return;
+
+    const ayahData = await sendAyahAndAudio(sock, targetJid, prog.reciter, prog.surahNum, prog.currentAyah);
+
+    if (ayahData && ayahData.surah) {
+        const totalAyahs = ayahData.surah.numberOfAyahs;
+
+        if (prog.currentAyah >= totalAyahs) {
+            // الوصول إلى آخر آية في السورة
+            if (quranTimers[targetJid]) {
+                clearInterval(quranTimers[targetJid]);
+                delete quranTimers[targetJid];
+            }
+            delete sequentialQuranProgress[targetJid];
+
+            await sock.sendMessage(targetJid, { 
+                text: `✅ *تمت بحمد الله تلاوة سورة ${ayahData.surah.name} بالكامل (${totalAyahs} آية).* 🎉\n\n_تم إيقاف الإرسال التلقائي بنجاح._` 
+            });
+        } else {
+            prog.currentAyah++; // الانتقال للآية التالية
+        }
     }
 }
 
@@ -306,7 +346,7 @@ function fmt12(timeStr) {
     if (isNaN(h) || isNaN(mi)) return '--:--';
     const period = h >= 12 ? 'م' : 'ص';
     const h12 = h % 12 || 12;
-    return `${h12}:${pad(mi)}${period}`;
+    return `${h12}:${pad(mi)} ${period}`;
 }
 
 function fmtDur(min) {
@@ -358,7 +398,7 @@ function formatTimingsSchedule(rawTimings = {}, timeZone) {
 
     const lines = list.map(item => {
         const rawTime = rawTimings?.[item.key] || '';
-        return `${item.icon} ${item.name}:${fmt12(rawTime)}`;
+        return `${item.icon} ${item.name}: ${fmt12(rawTime)}`;
     }).join('\n');
 
     return `${lines}\n\n${getNextPrayerInfo(rawTimings, timeZone)}`;
@@ -443,7 +483,7 @@ function startPrayerCheckLoop(sock) {
             }
         }
 
-        // فحص تنبيهات الصلاة وأذكار الفجر
+        // فحص تنبيهات الصلاة وأذكار الفجر والمساء
         for (const [jid, info] of Object.entries(subscribers)) {
             try {
                 const tz = info.timezone;
@@ -534,7 +574,7 @@ function startPrayerCheckLoop(sock) {
                         if (currentTotalMin === eveningAzkarMin && !sentReminders.has(keyEveningAzkar)) {
                             sentReminders.add(keyEveningAzkar);
                             await sock.sendMessage(jid, {
-                                text: ```🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
+                                text: `🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
                             });
                         }
                     }
@@ -595,7 +635,6 @@ async function startBot() {
             const closeCode = lastDisconnect?.error?.output?.statusCode;
             console.log(`🔴 انقطع الاتصال (الرمز: ${closeCode}). جاري إعادة الاتصال...`);
             
-            // إذا كان سبب الانقطاع هو تسجيل دخول آخر (440) ننتظر قبل إعادة الاتصال لتفادي التضارب
             if (closeCode === 440) {
                 console.log("⚠️ تم الكشف عن اتصال ثانٍ برقم الجلسة، إعادة محاولة الاتصال بعد 15 ثانية...");
                 setTimeout(startBot, 15000);
@@ -636,6 +675,7 @@ async function startBot() {
                 if (quranTimers[targetJid]) {
                     clearInterval(quranTimers[targetJid]);
                     delete quranTimers[targetJid];
+                    delete sequentialQuranProgress[targetJid];
                     await sock.sendMessage(targetJid, { text: `🛑 *تم إيقاف الإرسال التلقائي للقرآن الصوتي بنجاح.*` }, { quoted: msg });
                 } else {
                     await sock.sendMessage(targetJid, { text: `ℹ️ لا يوجد إرسال تلقائي للقرآن الصوتي مفعّل لديك حالياً.` }, { quoted: msg });
@@ -650,6 +690,7 @@ async function startBot() {
                 if (quranTimers[targetJid]) {
                     clearInterval(quranTimers[targetJid]);
                     delete quranTimers[targetJid];
+                    delete sequentialQuranProgress[targetJid];
                     stoppedAny = true;
                 }
 
@@ -675,8 +716,9 @@ async function startBot() {
                 });
                 menuText += "\n📌 *طرق الإرسال:*\n";
                 menuText += "1️⃣ لإرسال آية عشوائية واحدة: اكتب رقم القارئ فقط (مثال: `1`).\n";
-                menuText += "2️⃣ لإرسال آية محددة نص وصوت: اكتب رقم القارئ ثم رقم السورة ثم رقم الآية (مثال: `13 2 255` لآية الكرسي بصوت محمد أيوب).\n";
-                menuText += "3️⃣ للإرسال التلقائي المكرر: اكتب رقم القارئ ثم مسافة ثم الدقائق مع حرف د (مثال: `1 2د` أو `5 10د`).\n\n";
+                menuText += "2️⃣ لإرسال آية محددة نص وصوت: اكتب رقم القارئ ثم رقم السورة ثم رقم الآية (مثال: `13 2 255`).\n";
+                menuText += "3️⃣ لتلاوة سورة كاملة بالترتيب (آية تلو الأخرى حتى النهاية): اكتب رقم القارئ ثم الوقت بالدقائق ثم رقم السورة (مثال: `13 2د 2` لقراءة سورة البقرة بصوت محمد أيوب كل 2 دقيقة وتتوقف تلقائياً عند آخر آية).\n";
+                menuText += "4️⃣ للإرسال التلقائي لآيات عشوائية مكررة: اكتب رقم القارئ ثم الدقائق (مثال: `1 2د`).\n\n";
                 menuText += "🛑 لإيقاف تكرار القرآن فقط أرسل: *إيقاف القرآن*\n";
                 menuText += "🛑 لإيقاف تكرار الحديث فقط أرسل: *إيقاف الحديث*";
 
@@ -687,10 +729,51 @@ async function startBot() {
 
             // اختيار القارئ والتلاوة
             if (quranState[targetJid] && quranState[targetJid].step === 'WAITING_FOR_RECITER') {
-                const tripleMatch = text.match(/^(\d+)\s+(\d+)\s+(\d+)$/);
-                const repeatMatch = text.match(/^(\d+)(?:\s+(\d+)د)?$/i);
+                const sequentialMatch = text.match(/^(\d+)\s+(\d+)د\s+(\d+)$/i); // نمط: 13 2د 2 (تلاوة ترتيبية)
+                const tripleMatch = text.match(/^(\d+)\s+(\d+)\s+(\d+)$/);          // نمط: 13 2 255 (آية واحدة محددة)
+                const repeatMatch = text.match(/^(\d+)(?:\s+(\d+)د)?$/i);            // نمط: 13 2د (آية عشوائية مكررة)
 
-                if (tripleMatch) {
+                // 1️⃣ النمط الجديد: تلاوة السورة بالترتيب آية تلو الأخرى تلقائياً
+                if (sequentialMatch) {
+                    const selectedId = parseInt(sequentialMatch[1], 10);
+                    const minutes = parseInt(sequentialMatch[2], 10);
+                    const surahNum = parseInt(sequentialMatch[3], 10);
+                    const reciter = RECITERS.find(r => r.id === selectedId);
+
+                    if (reciter && minutes > 0 && surahNum >= 1 && surahNum <= 114) {
+                        if (quranTimers[targetJid]) {
+                            clearInterval(quranTimers[targetJid]);
+                            delete quranTimers[targetJid];
+                        }
+
+                        sequentialQuranProgress[targetJid] = {
+                            reciter: reciter,
+                            surahNum: surahNum,
+                            currentAyah: 1
+                        };
+
+                        await sock.sendMessage(targetJid, { 
+                            text: `📖 تم تفعيل تلاوة سورة رقم (${surahNum}) بالترتيب بصوت *${reciter.name}*، إرسال آية كل *${minutes}* دقيقة تلقائياً حتى نهاية السورة.\n\n🛑 لإيقاف التلاوة في أي وقت أرسل: *إيقاف القرآن*` 
+                        }, { quoted: msg });
+
+                        // إرسال الآية الأولى فوراً
+                        await sendNextSequentialAyah(sock, targetJid);
+
+                        // بدء المؤقت لتكرار باقي الآيات بالترتيب
+                        quranTimers[targetJid] = setInterval(async () => {
+                            await sendNextSequentialAyah(sock, targetJid);
+                        }, minutes * 60 * 1000);
+
+                        delete quranState[targetJid];
+                        return;
+                    } else {
+                        await sock.sendMessage(targetJid, { text: '❌ يرجى التأكد من أن رقم القارئ صحيح ورقم السورة بين 1 و 114.' }, { quoted: msg });
+                        return;
+                    }
+                }
+
+                // 2️⃣ نمط جلب آية محددة فوراً
+                else if (tripleMatch) {
                     const selectedId = parseInt(tripleMatch[1], 10);
                     const surahNum = parseInt(tripleMatch[2], 10);
                     const ayahNum = parseInt(tripleMatch[3], 10);
@@ -706,6 +789,8 @@ async function startBot() {
                         return;
                     }
                 }
+
+                // 3️⃣ نمط الآية العشوائية المكررة أو المفردة
                 else if (repeatMatch) {
                     const selectedId = parseInt(repeatMatch[1], 10);
                     const minutes = repeatMatch[2] ? parseInt(repeatMatch[2], 10) : null;
@@ -715,11 +800,12 @@ async function startBot() {
                         if (quranTimers[targetJid]) {
                             clearInterval(quranTimers[targetJid]);
                             delete quranTimers[targetJid];
+                            delete sequentialQuranProgress[targetJid];
                         }
 
                         if (minutes && minutes > 0) {
                             await sock.sendMessage(targetJid, { 
-                                text: `⏱️ تم تفعيل الإرسال التلقائي بصوت *${reciter.name}* كل *${minutes}* دقيقة.\n\n🛑 لإيقاف التلاوات أرسل: *إيقاف القرآن*` 
+                                text: `⏱️ تم تفعيل الإرسال التلقائي لآيات عشوائية بصوت *${reciter.name}* كل *${minutes}* دقيقة.\n\n🛑 لإيقاف التلاوات أرسل: *إيقاف القرآن*` 
                             }, { quoted: msg });
 
                             await sendAyahAndAudio(sock, targetJid, reciter);
@@ -900,7 +986,7 @@ async function startBot() {
 
             else if (cleanText === '.مساعدة' || cleanText === 'مساعدة' || cleanText === 'اوامر' || cleanText === 'الأوامر') {
                 await sock.sendMessage(targetJid, {
-                    text: `🕌 *بوت التذكير والإشعار الإسلامي الشامل*\n\n• *اشتراك اسم_المدينة* ➔ الاشتراك بمواقيت الصلاة.\n• *صلاتي* أو *مواقتي* ➔ عرض جدول أوقات اليوم.\n• *صوت* أو *قرآن* ➔ اختيار قارئ وسماع آيات قرآنية (عشوائية، أو محددة بمثال: \`13 2 255\`, أو مكررة).\n• *حديث 2د* ➔ تفعيل تذكير بالأحاديث والشرح كل عدد دقائق محدد.\n• *إيقاف القرآن* ➔ إيقاف الإرسال التلقائي للتلاوات الصوتية فقط.\n• *إيقاف الحديث* ➔ إيقاف التذكير التلقائي بالأحاديث فقط.\n• *إيقاف* ➔ إيقاف كافة التكرارات التلقائية معاً.\n• *فحص* ➔ للتأكد من حالة اتصال البوت.\n\n⚙️ *أوامر المطور:* \n• *.الاحصائيات* ➔ عرض عدد المشتركين والمدن.\n• *.اذاعة النص* ➔ إرسال رسالة لجميع المشتركين والمجموعات.\n• *.تنظيف* ➔ لحذف الجلسات أو مسح البيانات القديمة.`
+                    text: `🕌 *بوت التذكير والإشعار الإسلامي الشامل*\n\n• *اشتراك اسم_المدينة* ➔ الاشتراك بمواقيت الصلاة.\n• *صلاتي* أو *مواقتي* ➔ عرض جدول أوقات اليوم.\n• *صوت* أو *قرآن* ➔ اختيار قارئ وسماع آيات قرآنية (عشوائية، آية محددة \`13 2 255\`, أو سورة كاملة بالترتيب \`13 2د 2\`).\n• *حديث 2د* ➔ تفعيل تذكير بالأحاديث والشرح كل عدد دقائق محدد.\n• *إيقاف القرآن* ➔ إيقاف الإرسال التلقائي للتلاوات الصوتية فقط.\n• *إيقاف الحديث* ➔ إيقاف التذكير التلقائي بالأحاديث فقط.\n• *إيقاف* ➔ إيقاف كافة التكرارات التلقائية معاً.\n• *فحص* ➔ للتأكد من حالة اتصال البوت.\n\n⚙️ *أوامر المطور:* \n• *.الاحصائيات* ➔ عرض عدد المشتركين والمدن.\n• *.اذاعة النص* ➔ إرسال رسالة لجميع المشتركين والمجموعات.\n• *.تنظيف* ➔ لحذف الجلسات أو مسح البيانات القديمة.`
                 }, { quoted: msg });
             }
 
