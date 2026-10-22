@@ -147,7 +147,6 @@ function convertMp3ToOggOpus(inputPath, outputPath) {
     });
 }
 
-// دالة إرسال آية صوتية وخفيفة (عشوائية أو حسب السورة والآية المحددتين)
 async function sendAyahAndAudio(sock, from, reciter, surahNum = null, ayahNum = null) {
     let url = '';
     if (surahNum && ayahNum) {
@@ -204,7 +203,7 @@ async function sendAyahAndAudio(sock, from, reciter, surahNum = null, ayahNum = 
     }
 }
 
-// ================== 4. الأدعية والأحاديث والتوقيت ==================
+// ================== 4. الأدعية والأحاديث والتوقيت المحسن ==================
 const BACKUP_HADITHS = [
     { hadith: "«إِنَّ الصَّلَاةَ كَانَتْ عَلَى الْمُؤْمِنِينَ كِتَابًا مَوْقُوتًا»", source: "سورة النساء - آية 103" },
     { hadith: "«بُنِيَ الإِسْلاَمُ عَلَى خَمْسٍ: شَهَادَةِ أَنْ لاَ إِلَهَ إِلاَّ اللَّهُ وَأَنَّ مُحَمَّدًا رَسُولُ اللَّهِ، وَإِقَامِ الصَّلاَةِ، وَإِيتَاءِ الزَّكَاةِ، وَالحَجِّ، وَصَوْمِ رَمَضَانَ»", source: "صحيح البخاري" },
@@ -289,9 +288,20 @@ async function getHadithWithExplanationOnly() {
 
 const pad = (n) => String(n).padStart(2, '0');
 
+function parseTimeToMinutes(timeStr) {
+    if (!timeStr) return null;
+    const cleanTime = timeStr.trim().split(' ')[0];
+    const parts = cleanTime.split(':');
+    if (parts.length < 2) return null;
+    const h = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    if (isNaN(h) || isNaN(m)) return null;
+    return h * 60 + m;
+}
+
 function fmt12(timeStr) {
     if (!timeStr) return '--:--';
-    const cleanTime = timeStr.split(' ')[0];
+    const cleanTime = timeStr.trim().split(' ')[0];
     const [h, mi] = cleanTime.split(':').map(Number);
     if (isNaN(h) || isNaN(mi)) return '--:--';
     const period = h >= 12 ? 'م' : 'ص';
@@ -310,27 +320,25 @@ function fmtDur(min) {
 function getNextPrayerInfo(rawTimings = {}, timeZone) {
     const now = new Date();
     const nowStr = now.toLocaleTimeString('en-GB', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false });
-    const [currH, currM] = nowStr.split(':').map(Number);
-    const nowMin = currH * 60 + currM;
+    const nowMin = parseTimeToMinutes(nowStr) || 0;
 
     const names = { Fajr: 'الفجر', Dhuhr: 'الظهر', Asr: 'العصر', Maghrib: 'المغرب', Isha: 'العشاء' };
     const order = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
 
     let nextKey = order.find((k) => {
-        if (!rawTimings?.[k]) return false;
-        const [h, m] = rawTimings[k].split(' ')[0].split(':').map(Number);
-        return h * 60 + m > nowMin;
+        const pMin = parseTimeToMinutes(rawTimings?.[k]);
+        return pMin !== null && pMin > nowMin;
     });
 
     let diffMin = 0;
     if (nextKey && rawTimings?.[nextKey]) {
-        const [h, m] = rawTimings[nextKey].split(' ')[0].split(':').map(Number);
-        diffMin = h * 60 + m - nowMin;
+        const pMin = parseTimeToMinutes(rawTimings[nextKey]);
+        diffMin = pMin - nowMin;
     } else {
         nextKey = 'Fajr';
-        if (rawTimings?.Fajr) {
-            const [h, m] = rawTimings.Fajr.split(' ')[0].split(':').map(Number);
-            diffMin = 1440 - nowMin + (h * 60 + m);
+        const fajrMin = parseTimeToMinutes(rawTimings?.Fajr);
+        if (fajrMin !== null) {
+            diffMin = 1440 - nowMin + fajrMin;
         }
     }
 
@@ -407,7 +415,7 @@ async function getPrayerTimings(lat, lng, timezone) {
     } catch (e) { return null; }
 }
 
-// ================== 5. محرك التنبيهات الدورية ==================
+// ================== 5. محرك التنبيهات الدورية الدقيق ==================
 const sentReminders = new Set();
 
 function startPrayerCheckLoop(sock) {
@@ -415,6 +423,7 @@ function startPrayerCheckLoop(sock) {
         const now = new Date();
         const nowMs = Date.now();
 
+        // فحص تذكيرات الأحاديث
         for (const [jid, config] of Object.entries(hadithSubscribers)) {
             try {
                 if (!config.intervalMinutes || config.intervalMinutes <= 0) continue;
@@ -434,14 +443,15 @@ function startPrayerCheckLoop(sock) {
             }
         }
 
+        // فحص تنبيهات الصلاة وأذكار الفجر
         for (const [jid, info] of Object.entries(subscribers)) {
             try {
                 const tz = info.timezone;
                 if (!tz) continue;
 
                 const localTimeStr = now.toLocaleTimeString('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
-                const [currH, currM] = localTimeStr.split(':').map(Number);
-                const currentTotalMin = currH * 60 + currM;
+                const currentTotalMin = parseTimeToMinutes(localTimeStr);
+                if (currentTotalMin === null) continue;
 
                 const todayDateStr = now.toLocaleDateString('en-CA', { timeZone: tz });
                 if (!info.rawTimings || info.lastFetchDate !== todayDateStr) {
@@ -471,11 +481,8 @@ function startPrayerCheckLoop(sock) {
 
                 for (const item of prayersToCheck) {
                     const prayerName = item.name;
-                    const timeVal = rawTimings[item.key] ? rawTimings[item.key].split(' ')[0] : null;
-                    if (!timeVal) continue;
-
-                    const [pH, pM] = timeVal.split(':').map(Number);
-                    const prayerTotalMin = pH * 60 + pM;
+                    const prayerTotalMin = parseTimeToMinutes(rawTimings[item.key]);
+                    if (prayerTotalMin === null) continue;
 
                     const minBefore30 = prayerTotalMin - 30;
                     const key30 = `${jid}_${todayDateStr}_${prayerName}_30min`;
@@ -506,26 +513,30 @@ function startPrayerCheckLoop(sock) {
                 }
 
                 if (rawTimings['Fajr']) {
-                    const [fH, fM] = rawTimings['Fajr'].split(' ')[0].split(':').map(Number);
-                    const morningAzkarMin = fH * 60 + fM + 20;
-                    const keyMorningAzkar = `${jid}_${todayDateStr}_morning_azkar`;
-                    if (currentTotalMin === morningAzkarMin && !sentReminders.has(keyMorningAzkar)) {
-                        sentReminders.add(keyMorningAzkar);
-                        await sock.sendMessage(jid, {
-                            text: `🌅 *تذكير بأذكار الصباح* 🌸\n\nأصبحنا وأصبح الملك لله والحمد لله.. لا تنسَ قراءة أذكار الصباح لتحفظك وتنوّر يومك ✨\n\n«أَلا بِذِكْرِ اللَّهِ تَطْمَئِنُّ الْقُلُوبُ»`
-                        });
+                    const fMin = parseTimeToMinutes(rawTimings['Fajr']);
+                    if (fMin !== null) {
+                        const morningAzkarMin = fMin + 20;
+                        const keyMorningAzkar = `${jid}_${todayDateStr}_morning_azkar`;
+                        if (currentTotalMin === morningAzkarMin && !sentReminders.has(keyMorningAzkar)) {
+                            sentReminders.add(keyMorningAzkar);
+                            await sock.sendMessage(jid, {
+                                text: `🌅 *تذكير بأذكار الصباح* 🌸\n\nأصبحنا وأصبح الملك لله والحمد لله.. لا تنسَ قراءة أذكار الصباح لتحفظك وتنوّر يومك ✨\n\n«أَلا بِذِكْرِ اللَّهِ تَطْمَئِنُّ الْقُلُوبُ»`
+                            });
+                        }
                     }
                 }
 
                 if (rawTimings['Asr']) {
-                    const [aH, aM] = rawTimings['Asr'].split(' ')[0].split(':').map(Number);
-                    const eveningAzkarMin = aH * 60 + aM + 20;
-                    const keyEveningAzkar = `${jid}_${todayDateStr}_evening_azkar`;
-                    if (currentTotalMin === eveningAzkarMin && !sentReminders.has(keyEveningAzkar)) {
-                        sentReminders.add(keyEveningAzkar);
-                        await sock.sendMessage(jid, {
-                            text: ```🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
-                        });
+                    const aMin = parseTimeToMinutes(rawTimings['Asr']);
+                    if (aMin !== null) {
+                        const eveningAzkarMin = aMin + 20;
+                        const keyEveningAzkar = `${jid}_${todayDateStr}_evening_azkar`;
+                        if (currentTotalMin === eveningAzkarMin && !sentReminders.has(keyEveningAzkar)) {
+                            sentReminders.add(keyEveningAzkar);
+                            await sock.sendMessage(jid, {
+                                text: ``🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
+                            });
+                        }
                     }
                 }
 
@@ -657,7 +668,7 @@ async function startBot() {
                 RECITERS.forEach(r => {
                     menuText += `*[ ${r.id} ]* ${r.name}\n`;
                 });
-                menuText += "\n📌 *طرق الرد الإرسال:*\n";
+                menuText += "\n📌 *طرق الإرسال:*\n";
                 menuText += "1️⃣ لإرسال آية عشوائية واحدة: اكتب رقم القارئ فقط (مثال: `1`).\n";
                 menuText += "2️⃣ لإرسال آية محددة نص وصوت: اكتب رقم القارئ ثم رقم السورة ثم رقم الآية (مثال: `13 2 255` لآية الكرسي بصوت محمد أيوب).\n";
                 menuText += "3️⃣ للإرسال التلقائي المكرر: اكتب رقم القارئ ثم مسافة ثم الدقائق مع حرف د (مثال: `1 2د` أو `5 10د`).\n\n";
@@ -669,7 +680,7 @@ async function startBot() {
                 return;
             }
 
-            // اختيار القارئ والتلاوة (سواء عشوائية، أو آية محددة، أو تكرار بالدقائق)
+            // اختيار القارئ والتلاوة
             if (quranState[targetJid] && quranState[targetJid].step === 'WAITING_FOR_RECITER') {
                 const tripleMatch = text.match(/^(\d+)\s+(\d+)\s+(\d+)$/);
                 const repeatMatch = text.match(/^(\d+)(?:\s+(\d+)د)?$/i);
