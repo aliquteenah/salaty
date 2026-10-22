@@ -17,7 +17,7 @@ app.get('/', (req, res) => {
     res.send('🕌 البوت الشامل يعمل بنجاح ومربوط بـ Firebase!');
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ خادم الويب يعمل على المنفذ: ${PORT}`);
 });
 
@@ -534,7 +534,7 @@ function startPrayerCheckLoop(sock) {
                         if (currentTotalMin === eveningAzkarMin && !sentReminders.has(keyEveningAzkar)) {
                             sentReminders.add(keyEveningAzkar);
                             await sock.sendMessage(jid, {
-                                text: ``🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
+                                text: ```🌆 *تذكير بأذكار المساء* 🌙\n\nأمسينا وأمسى الملك لله.. حان وقت حصنك اليومي بقراءة أذكار المساء 🤍`
                             });
                         }
                     }
@@ -594,7 +594,12 @@ async function startBot() {
         if (connection === 'close') {
             const closeCode = lastDisconnect?.error?.output?.statusCode;
             console.log(`🔴 انقطع الاتصال (الرمز: ${closeCode}). جاري إعادة الاتصال...`);
-            if (closeCode !== DisconnectReason.loggedOut) {
+            
+            // إذا كان سبب الانقطاع هو تسجيل دخول آخر (440) ننتظر قبل إعادة الاتصال لتفادي التضارب
+            if (closeCode === 440) {
+                console.log("⚠️ تم الكشف عن اتصال ثانٍ برقم الجلسة، إعادة محاولة الاتصال بعد 15 ثانية...");
+                setTimeout(startBot, 15000);
+            } else if (closeCode !== DisconnectReason.loggedOut) {
                 setTimeout(startBot, 3000);
             }
         } else if (connection === 'open') {
