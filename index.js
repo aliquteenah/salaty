@@ -8,17 +8,17 @@ import path from 'path';
 import { restoreSubscribersFromFirebase, saveSubscribersToFirebase, restoreAuthFromFirebase, saveAuthToFirebase } from './config/firebase.js';
 import { unwrap, getText, getFormattedDate } from './utils/helpers.js';
 import { messageStore, saveMedia, handleAntiDeleteAndEdit } from './features/antiDelete.js';
-import { sendHumanTextToSpeech, sendTransparentSticker } from './features/ttsSticker.js';
+import { sendTransparentSticker, sendHumanTextToSpeech } from './features/ttsSticker.js';
 import { startReminderLoop, handleRemindersAndWeather } from './features/remindersWeather.js';
 import { quranTimers, sequentialQuranProgress, handleQuranCommands } from './features/quran.js';
 import { handleHadithCommands, getRandomHadith } from './features/hadith.js';
 import { getPlace, getPrayerTimings, formatTimingsSchedule, startPrayerCheckLoop, handlePrayerCommands } from './features/prayer.js';
 
-const HELP_TEXT = `📖 *قائمة الأوامر الشاملة*
+const HELP_TEXT = `📖 *قائمة الأوامر الشاملة (للكل)*
 
 🎙️ *.حامد نص* أو *.صوت نص* ➔ تحويل النص إلى صوت رجالي
 🎙️ *.صالحة نص* ➔ تحويل النص إلى صوت أنثوي
-🖼️ *.ملصق نص* ➔ صنع ملصق شفاف بنص
+🖼️ *.ملصق نص* ➔ صنع ملصق بنص
 ⏰ *.ذكرني 30د نص* ➔ ضبط تذكير شخصي
 🌤️ *.طقس مدينة* ➔ حالة الطقس المباشرة
 🕌 *اشتراك مدينة* ➔ اشتراك بمواقيت الصلاة والتنبيهات
@@ -27,7 +27,7 @@ const HELP_TEXT = `📖 *قائمة الأوامر الشاملة*
 🕌 *صلاتي* ➔ عرض مواقيت اليوم
 🎧 *صوت* أو *قرآن* ➔ الاستماع بالتلاوات والترتيب
 📜 *حديث 2د* ➔ تذكيرات الأحاديث
-🧹 *.تنظيف* ➔ تفريغ الملفات المؤقتة
+🧹 *.تنظيف* ➔ تفريغ الملفات المؤقتة (للمطور)
 📖 *.مساعدة* ➔ عرض هذه القائمة
 
 ⚙️ *ميزات تلقائية مفعّلة:*
@@ -50,9 +50,8 @@ let subscribers = {};
 let hadithSubscribers = {};
 const PHONE_NUMBER = "966551138192";
 
-async function cleanTempFiles(sock, jid, msgKey) {
+async function cleanTempFiles(sock, jid, msg) {
     try {
-        await sock.sendMessage(jid, { text: "⏳ جاري تنظيف الملفات المؤقتة والذاكرة...", edit: msgKey });
         let deletedCount = 0;
         const currentDir = process.cwd();
         fs.readdirSync(currentDir).forEach((file) => {
@@ -61,10 +60,9 @@ async function cleanTempFiles(sock, jid, msgKey) {
             }
         });
         messageStore.clear();
-        await delay(1000);
-        await sock.sendMessage(jid, { text: `🧹 *تم التنظيف بنجاح!*\n✅ تم حذف ${deletedCount} ملفاً مؤقتاً.`, edit: msgKey });
+        await sock.sendMessage(jid, { text: `🧹 *تم التنظيف بنجاح!*\n✅ تم حذف ${deletedCount} ملفاً مؤقتاً وتفريغ الذاكرة.` }, { quoted: msg });
     } catch (err) {
-        await sock.sendMessage(jid, { text: "❌ حدث خطأ أثناء التنظيف.", edit: msgKey });
+        await sock.sendMessage(jid, { text: "❌ حدث خطأ أثناء التنظيف." }, { quoted: msg });
     }
 }
 
@@ -147,7 +145,6 @@ async function startBot() {
             const originalText = getText(m) || '';
             const cleanText = originalText.trim().toLowerCase();
 
-            // 1. أسباب الإيقاف
             if (cleanText === 'ايقاف الحديث' || cleanText === 'إيقاف الحديث') {
                 if (hadithSubscribers[targetJid]) {
                     delete hadithSubscribers[targetJid];
@@ -175,41 +172,39 @@ async function startBot() {
                 continue;
             }
 
-            // 2. معالجة أوامر القرآن والأحاديث والصلوات والطقس لجميع المستخدمين
             if (await handleQuranCommands(sock, targetJid, originalText, cleanText, msg)) continue;
             if (await handleHadithCommands(sock, targetJid, originalText, subscribers, hadithSubscribers, msg)) continue;
             if (await handlePrayerCommands(sock, targetJid, originalText, cleanText, subscribers, hadithSubscribers, msg)) continue;
             if (await handleRemindersAndWeather(sock, msg, targetJid, originalText)) continue;
 
-            // 3. أمر المساعدة (يعمل مع كافة الأنماط والعملاء)
             if (['.مساعدة', '.مساعده', 'مساعدة', 'مساعده', 'اوامر', 'الأوامر', '.اوامر', '.الأوامر'].includes(cleanText)) {
                 await sock.sendMessage(targetJid, { text: HELP_TEXT }, { quoted: msg });
                 continue;
             }
 
             if (cleanText === '.تنظيف' && msg.key.fromMe) {
-                await cleanTempFiles(sock, targetJid, msg.key);
+                await cleanTempFiles(sock, targetJid, msg);
                 continue;
             }
 
-            // 4. أوامر الملصقات والصوتيات (تعمل للجميع الآن)
-            if (originalText.startsWith('.صوت') || originalText.startsWith('.حامد')) {
-                const textToSpeech = originalText.replace('.صوت', '').replace('.حامد', '').trim();
+            if (originalText.startsWith('.صوت') || originalText.startsWith('.حامد') || originalText.startsWith('صوت') || originalText.startsWith('حامد')) {
+                const textToSpeech = originalText.replace(/^(\.صوت|\.حامد|صوت|حامد)/i, '').trim();
                 if (textToSpeech) await sendHumanTextToSpeech(sock, targetJid, msg, textToSpeech, 'hamed');
                 continue;
             }
-            if (originalText.startsWith('.صالحة') || originalText.startsWith('.صالحه')) {
-                const textToSpeech = originalText.replace('.صالحة', '').replace('.صالحه', '').trim();
+
+            if (originalText.startsWith('.صالحة') || originalText.startsWith('.صالحه') || originalText.startsWith('صالحة') || originalText.startsWith('صالحه')) {
+                const textToSpeech = originalText.replace(/^(\.صالحة|\.صالحه|صالحة|صالحه)/i, '').trim();
                 if (textToSpeech) await sendHumanTextToSpeech(sock, targetJid, msg, textToSpeech, 'saliha');
                 continue;
             }
-            if (originalText.startsWith('.ملصق')) {
-                const textToConvert = originalText.replace('.ملصق', '').trim();
+
+            if (originalText.startsWith('.ملصق') || originalText.startsWith('ملصق')) {
+                const textToConvert = originalText.replace(/^(\.ملصق|ملصق)/i, '').trim();
                 if (textToConvert) await sendTransparentSticker(sock, targetJid, msg, textToConvert);
                 continue;
             }
 
-            // 5. أوامر الاشتراك والصلوات للمشتركين والمجموعات
             if (cleanText.startsWith('اشتراك')) {
                 const cityName = originalText.replace(/^اشتراك/i, '').trim();
                 if (!cityName) { await sock.sendMessage(targetJid, { text: `❌ يرجى كتابة اسم المدينة بعد كلمة اشتراك.` }, { quoted: msg }); continue; }
@@ -244,4 +239,3 @@ async function startBot() {
 }
 
 startBot();
- 
