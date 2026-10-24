@@ -1,6 +1,7 @@
 import fetch from 'node-fetch';
 
 export const pad = (n) => String(n).padStart(2, '0');
+export const toEnDigits = (s) => s.replace(/[٠-٩]/g, (d) => '٠١٢٣٤٥٦٧٨٩'.indexOf(d));
 
 export function parseTimeToMinutes(timeStr) {
     if (!timeStr) return null;
@@ -36,7 +37,27 @@ export function getFormattedDate(timeZone) {
 }
 
 export async function getJson(url) {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     return res.json();
 }
+
+export function unwrap(message) {
+    let cur = message;
+    for (let i = 0; i < 5 && cur; i++) {
+        const inner =
+            cur.ephemeralMessage?.message ||
+            cur.viewOnceMessage?.message ||
+            cur.viewOnceMessageV2?.message ||
+            cur.viewOnceMessageV2Extension?.message ||
+            cur.documentWithCaptionMessage?.message ||
+            cur.editedMessage?.message;
+        if (!inner) break;
+        cur = inner;
+    }
+    return cur;
+}
+
+export const getType = (c) => Object.keys(c || {}).find((k) => k !== 'messageContextInfo' && k !== 'senderKeyDistributionMessage');
+export const getText = (c) => c?.conversation || c?.extendedTextMessage?.text || null;
+export const selfJid = (sock) => sock.user.id.split(':')[0] + '@s.whatsapp.net';
