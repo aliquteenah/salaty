@@ -8,7 +8,7 @@ import path from 'path';
 import { restoreSubscribersFromFirebase, saveSubscribersToFirebase, restoreAuthFromFirebase, saveAuthToFirebase } from './config/firebase.js';
 import { unwrap, getText, getFormattedDate } from './utils/helpers.js';
 import { messageStore, saveMedia, handleAntiDeleteAndEdit } from './features/antiDelete.js';
-import { sendHumanTextToSpeech, sendTransparentSticker, animateMyMessage } from './features/ttsSticker.js';
+import { sendHumanTextToSpeech, sendTransparentSticker } from './features/ttsSticker.js';
 import { startReminderLoop, handleRemindersAndWeather } from './features/remindersWeather.js';
 import { quranTimers, sequentialQuranProgress, handleQuranCommands } from './features/quran.js';
 import { handleHadithCommands, getRandomHadith } from './features/hadith.js';
@@ -33,8 +33,7 @@ const HELP_TEXT = `📖 *قائمة الأوامر الشاملة*
 ⚙️ *ميزات تلقائية مفعّلة:*
 • كشف الرسائل النصية المحذوفة
 • كشف الوسائط المحذوفة
-• كشف الرسائل المعدّلة
-• كتابة حيّة تفاعلية لرسائلك`;
+• كشف الرسائل المعدّلة`;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -148,6 +147,7 @@ async function startBot() {
             const originalText = getText(m) || '';
             const cleanText = originalText.trim().toLowerCase();
 
+            // 1. أسباب الإيقاف
             if (cleanText === 'ايقاف الحديث' || cleanText === 'إيقاف الحديث') {
                 if (hadithSubscribers[targetJid]) {
                     delete hadithSubscribers[targetJid];
@@ -175,13 +175,15 @@ async function startBot() {
                 continue;
             }
 
+            // 2. معالجة أوامر القرآن والأحاديث والصلوات والطقس لجميع المستخدمين
             if (await handleQuranCommands(sock, targetJid, originalText, cleanText, msg)) continue;
             if (await handleHadithCommands(sock, targetJid, originalText, subscribers, hadithSubscribers, msg)) continue;
             if (await handlePrayerCommands(sock, targetJid, originalText, cleanText, subscribers, hadithSubscribers, msg)) continue;
             if (await handleRemindersAndWeather(sock, msg, targetJid, originalText)) continue;
 
-            if (cleanText === '.مساعدة' || cleanText === '.مساعده' || cleanText === 'مساعدة') {
-                await sock.sendMessage(targetJid, { text: HELP_TEXT, edit: msg.key.fromMe ? msg.key : undefined });
+            // 3. أمر المساعدة (يعمل مع كافة الأنماط والعملاء)
+            if (['.مساعدة', '.مساعده', 'مساعدة', 'مساعده', 'اوامر', 'الأوامر', '.اوامر', '.الأوامر'].includes(cleanText)) {
+                await sock.sendMessage(targetJid, { text: HELP_TEXT }, { quoted: msg });
                 continue;
             }
 
@@ -190,24 +192,24 @@ async function startBot() {
                 continue;
             }
 
-            if (msg.key.fromMe) {
-                if (originalText.startsWith('.صوت') || originalText.startsWith('.حامد')) {
-                    const textToSpeech = originalText.replace('.صوت', '').replace('.حامد', '').trim();
-                    if (textToSpeech) await sendHumanTextToSpeech(sock, targetJid, msg.key, textToSpeech, 'hamed');
-                    continue;
-                }
-                if (originalText.startsWith('.صالحة') || originalText.startsWith('.صالحه')) {
-                    const textToSpeech = originalText.replace('.صالحة', '').replace('.صالحه', '').trim();
-                    if (textToSpeech) await sendHumanTextToSpeech(sock, targetJid, msg.key, textToSpeech, 'saliha');
-                    continue;
-                }
-                if (originalText.startsWith('.ملصق')) {
-                    const textToConvert = originalText.replace('.ملصق', '').trim();
-                    if (textToConvert) await sendTransparentSticker(sock, targetJid, msg.key, textToConvert);
-                    continue;
-                }
+            // 4. أوامر الملصقات والصوتيات (تعمل للجميع الآن)
+            if (originalText.startsWith('.صوت') || originalText.startsWith('.حامد')) {
+                const textToSpeech = originalText.replace('.صوت', '').replace('.حامد', '').trim();
+                if (textToSpeech) await sendHumanTextToSpeech(sock, targetJid, msg, textToSpeech, 'hamed');
+                continue;
+            }
+            if (originalText.startsWith('.صالحة') || originalText.startsWith('.صالحه')) {
+                const textToSpeech = originalText.replace('.صالحة', '').replace('.صالحه', '').trim();
+                if (textToSpeech) await sendHumanTextToSpeech(sock, targetJid, msg, textToSpeech, 'saliha');
+                continue;
+            }
+            if (originalText.startsWith('.ملصق')) {
+                const textToConvert = originalText.replace('.ملصق', '').trim();
+                if (textToConvert) await sendTransparentSticker(sock, targetJid, msg, textToConvert);
+                continue;
             }
 
+            // 5. أوامر الاشتراك والصلوات للمشتركين والمجموعات
             if (cleanText.startsWith('اشتراك')) {
                 const cityName = originalText.replace(/^اشتراك/i, '').trim();
                 if (!cityName) { await sock.sendMessage(targetJid, { text: `❌ يرجى كتابة اسم المدينة بعد كلمة اشتراك.` }, { quoted: msg }); continue; }
@@ -237,12 +239,9 @@ async function startBot() {
                 await sock.sendMessage(targetJid, { text: `✅ البوت شغال ومتصل بنجاح بكافة ميزاته الشاملة!` }, { quoted: msg });
                 continue;
             }
-
-            if (msg.key.fromMe && originalText.length > 1 && !originalText.startsWith('.')) {
-                await animateMyMessage(sock, targetJid, msg.key, originalText, 80);
-            }
         }
     });
 }
 
 startBot();
+ 
