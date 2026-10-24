@@ -65,6 +65,53 @@ export function getNextPrayerInfo(rawTimings = {}, timeZone) {
     return `⏳ القادمة: *${names[nextKey] || 'الفجر'}* بعد ${fmtDur(diffMin)}`;
 }
 
+export async function handlePrayerCommands(sock, targetJid, text, cleanText, subscribers, hadithSubscribers, msg) {
+    if (cleanText === 'إلغاء الاشتراك' || cleanText === 'الغاء الاشتراك' || cleanText === 'إلغاء اشتراك' || cleanText === 'الغاء اشتراك') {
+        if (subscribers[targetJid]) {
+            delete subscribers[targetJid];
+            await saveSubscribersToFirebase(subscribers, hadithSubscribers);
+            await sock.sendMessage(targetJid, { text: `🛑 *تم إلغاء الاشتراك في خدمة مواقيت الصلاة بنجاح.*` }, { quoted: msg });
+        } else {
+            await sock.sendMessage(targetJid, { text: `ℹ️ أنت غير مشترك في خدمة مواقيت الصلاة حالياً.` }, { quoted: msg });
+        }
+        return true;
+    }
+
+    if (cleanText.startsWith('تعديل') || cleanText.startsWith('تغيير')) {
+        const newCity = text.replace(/^(تعديل|تغيير)/i, '').trim();
+        if (!newCity) {
+            await sock.sendMessage(targetJid, { text: `❌ يرجى كتابة اسم المدينة الجديد بعد الأمر.\nمثال: *تعديل جازان*` }, { quoted: msg });
+            return true;
+        }
+
+        const place = await getPlace(newCity);
+        if (!place) {
+            await sock.sendMessage(targetJid, { text: `❌ لم يتم العثور على المدينة "${newCity}".` }, { quoted: msg });
+            return true;
+        }
+
+        const tz = place.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+        const rawTimings = await getPrayerTimings(place.latitude, place.longitude, tz);
+
+        if (rawTimings) {
+            subscribers[targetJid] = {
+                cityName: place.name,
+                country: place.country || '',
+                lat: place.latitude,
+                lng: place.longitude,
+                timezone: tz,
+                rawTimings: rawTimings,
+                lastFetchDate: new Date().toLocaleDateString('en-CA', { timeZone: tz })
+            };
+            await saveSubscribersToFirebase(subscribers, hadithSubscribers);
+            await sock.sendMessage(targetJid, { text: `✅ *تم تعديل المدينة بنجاح إلى (${place.name} - ${place.country || ''})!* 🔄` }, { quoted: msg });
+        }
+        return true;
+    }
+
+    return false;
+}
+
 const sentReminders = new Set();
 
 export function startPrayerCheckLoop(sock, subscribers, hadithSubscribers) {
@@ -72,7 +119,6 @@ export function startPrayerCheckLoop(sock, subscribers, hadithSubscribers) {
         const now = new Date();
         const nowMs = Date.now();
 
-        // 1. تذكيرات الأحاديث
         for (const [jid, config] of Object.entries(hadithSubscribers)) {
             try {
                 if (!config.intervalMinutes || config.intervalMinutes <= 0) continue;
@@ -85,7 +131,6 @@ export function startPrayerCheckLoop(sock, subscribers, hadithSubscribers) {
             } catch (err) {}
         }
 
-        // 2. تنبيهات مواقيت الصلاة والأذكار
         for (const [jid, info] of Object.entries(subscribers)) {
             try {
                 const tz = info.timezone;
@@ -119,7 +164,6 @@ export function startPrayerCheckLoop(sock, subscribers, hadithSubscribers) {
                     const prayerTotalMin = parseTimeToMinutes(rawTimings[item.key]);
                     if (prayerTotalMin === null) continue;
 
-                    // تنبيه قبل 30 دقيقة (الشرط المرن)
                     const minBefore30 = prayerTotalMin - 30;
                     const key30 = `${jid}_${todayDateStr}_${item.name}_30min`;
                     if (Math.abs(currentTotalMin - minBefore30) <= 1 && !sentReminders.has(key30)) {
@@ -127,14 +171,12 @@ export function startPrayerCheckLoop(sock, subscribers, hadithSubscribers) {
                         await sock.sendMessage(jid, { text: `⏳ *تنبيه: قرب صلاة ${item.name}* 🕌\n\n${dateObj.fullText}\n\nتبقّى 30 دقيقة على أذان صلاة *${item.name}* في مدينة *${info.cityName}* (${info.country}).\n\n✨ _جهز نفسك للصلاة وتهيأ للوضوء_\n\n───────────────\n${hadithText}` });
                     }
 
-                    // تنبيه الأذان بالضبط
                     const keyExact = `${jid}_${todayDateStr}_${item.name}_exact`;
                     if (Math.abs(currentTotalMin - prayerTotalMin) <= 1 && !sentReminders.has(keyExact)) {
                         sentReminders.add(keyExact);
                         await sock.sendMessage(jid, { text: `🕌 *حان الآن أذان صلاة ${item.name}* 🌸\n\n${dateObj.fullText}\n\nحان الآن موعد أذان صلاة *${item.name}* حسب التوقيت المحلي لمدينة *${info.cityName}* (${info.country}).\n\n✨ _حيّ على الصلاة.. حيّ على الفلاح_\n\n───────────────\n${hadithText}` });
                     }
 
-                    // تنبيه الإقامة
                     const minAfter10 = prayerTotalMin + 10;
                     const keyIqama = `${jid}_${todayDateStr}_${item.name}_iqama`;
                     if (Math.abs(currentTotalMin - minAfter10) <= 1 && !sentReminders.has(keyIqama)) {
