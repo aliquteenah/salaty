@@ -1,84 +1,69 @@
-import { execFile } from 'child_process';
+import { createCanvas } from 'canvas';
 import fs from 'fs';
 import path from 'path';
+import ffmpeg from 'fluent-ffmpeg';
 
 export async function sendTransparentSticker(sock, jid, msg, text) {
     const pngPath = path.join(process.cwd(), `temp_${Date.now()}_stk.png`);
     const webpPath = path.join(process.cwd(), `temp_${Date.now()}_stk.webp`);
-    const fontPath = path.join(process.cwd(), 'arabic_font.ttf');
 
     try {
-        await sock.sendMessage(jid, { text: "⏳ جاري تحويل النص إلى ملصق..." }, { quoted: msg });
+        await sock.sendMessage(jid, { text: "⏳ جاري إنشاء الملصق..." }, { quoted: msg });
 
-        const args = ['-background', 'none'];
-        if (fs.existsSync(fontPath)) args.push('-font', fontPath);
-        args.push(
-            '-fill', 'white', '-stroke', 'black', '-strokewidth', '2',
-            '-gravity', 'center', '-size', '480x480',
-            `caption:${text.startsWith('@') ? ' ' + text : text}`,
-            '-extent', '512x512', '-gravity', 'center', pngPath
-        );
+        // 1. إنشاء قماش ملصق شفاف بحجم 512x512
+        const canvas = createCanvas(512, 512);
+        const ctx = canvas.getContext('2d');
 
-        execFile('convert', args, (err) => {
-            if (err) {
-                console.log('⚠️ أداة ImageMagick/convert غير مثبتة على السيرفر الحالي.');
-                sock.sendMessage(jid, { text: "❌ تعذر إنتاج الملصق، ميزة الملصقات تحتاج حزمة ImageMagick على السيرفر." }, { quoted: msg });
-                return;
-            }
+        ctx.clearRect(0, 0, 512, 512);
 
-            execFile('ffmpeg', ['-y', '-i', pngPath, '-c:v', 'libwebp', webpPath], async (ffErr) => {
-                if (!ffErr && fs.existsSync(webpPath)) {
+        // 2. إعداد الخط والتنسيق النصي
+        ctx.font = 'bold 45px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        // حدود النص الخارجي باللون الأسود
+        ctx.strokeStyle = 'black';
+        ctx.lineWidth = 6;
+        ctx.strokeText(text, 256, 256);
+
+        // تعبئة النص باللون الأبيض
+        ctx.fillStyle = 'white';
+        ctx.fillText(text, 256, 256);
+
+        // 3. حفظ الصورة المؤقتة بصيغة PNG
+        const buffer = canvas.toBuffer('image/png');
+        fs.writeFileSync(pngPath, buffer);
+
+        // 4. تحويل PNG إلى ملصق WebP عالي الجودة بواسطة ffmpeg
+        ffmpeg(pngPath)
+            .outputOptions([
+                '-vcodec libwebp',
+                '-vf scale=512:512:force_original_aspect_ratio=increase,crop=512:512'
+            ])
+            .toFormat('webp')
+            .save(webpPath)
+            .on('end', async () => {
+                if (fs.existsSync(webpPath)) {
                     await sock.sendMessage(jid, { sticker: fs.readFileSync(webpPath) }, { quoted: msg });
-                } else {
-                    await sock.sendMessage(jid, { text: "❌ خطأ في معالجة تحويل الملصق." }, { quoted: msg });
                 }
-
+                if (fs.existsSync(pngPath)) fs.unlinkSync(pngPath);
+                if (fs.existsSync(webpPath)) fs.unlinkSync(webpPath);
+            })
+            .on('error', async (err) => {
+                console.log('خطأ تحويل الملصق بـ FFmpeg:', err.message);
+                await sock.sendMessage(jid, { text: "❌ تعذر تحويل الملصق إلى صيغة WebP." }, { quoted: msg });
                 if (fs.existsSync(pngPath)) fs.unlinkSync(pngPath);
                 if (fs.existsSync(webpPath)) fs.unlinkSync(webpPath);
             });
-        });
+
     } catch (err) {
         console.log('خطأ معالجة الملصق:', err.message);
-        await sock.sendMessage(jid, { text: "❌ حدث خطأ أثناء إنشاء الملصق." }, { quoted: msg });
+        await sock.sendMessage(jid, { text: "❌ حدث خطأ أثناء رسم الملصق." }, { quoted: msg });
+        if (fs.existsSync(pngPath)) fs.unlinkSync(pngPath);
+        if (fs.existsSync(webpPath)) fs.unlinkSync(webpPath);
     }
 }
 
 export async function sendHumanTextToSpeech(sock, jid, msg, text, voiceType = 'saliha') {
-    const timeStamp = Date.now();
-    const mp3Path = path.join(process.cwd(), `temp_speech_${timeStamp}.mp3`);
-    const opusPath = path.join(process.cwd(), `temp_speech_${timeStamp}.opus`);
-
-    try {
-        const speakerName = voiceType === 'saliha' ? 'صالحة 👩' : 'حامد 👨';
-        await sock.sendMessage(jid, { text: `🎙️ جاري توليد الصوت (${speakerName})...` }, { quoted: msg });
-
-        execFile('gtts-cli', ['--lang', 'ar', '--output', mp3Path, '--', text], (err) => {
-            if (err || !fs.existsSync(mp3Path)) {
-                console.log('⚠️ حزمة gtts-cli غير متاحة أو حدث خطأ في النظام:', err?.message);
-                sock.sendMessage(jid, { text: `❌ فشل توليد الصوت (${speakerName}). الخدمة غير مدعومة على البيئة الحالية.` }, { quoted: msg });
-                return;
-            }
-
-            const audioFilter = voiceType === 'hamed'
-                ? 'asetrate=24000*0.8,aresample=24000,atempo=1.25'
-                : 'asetrate=24000*1.0,aresample=24000,atempo=1.0';
-
-            execFile('ffmpeg', [
-                '-y', '-i', mp3Path, '-af', audioFilter,
-                '-c:a', 'libopus', '-b:a', '32k', '-vbr', 'on', opusPath
-            ], async (ffErr) => {
-                if (!ffErr && fs.existsSync(opusPath)) {
-                    await sock.sendMessage(jid, { audio: fs.readFileSync(opusPath), mimetype: 'audio/ogg; codecs=opus', ptt: true }, { quoted: msg });
-                } else {
-                    await sock.sendMessage(jid, { text: "❌ خطأ في ترميز الصوت مع FFmpeg." }, { quoted: msg });
-                }
-
-                if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
-                if (fs.existsSync(opusPath)) fs.unlinkSync(opusPath);
-            });
-        });
-    } catch (err) {
-        console.log('خطأ في تحويل الصوت:', err.message);
-        await sock.sendMessage(jid, { text: "❌ حدث خطأ أثناء تحويل النص لـ صوت." }, { quoted: msg });
-    }
+    await sock.sendMessage(jid, { text: "ℹ️ ميزة تحويل النص إلى صوت موقوفة مؤقتاً لتوفير موارد السيرفر." }, { quoted: msg });
 }
