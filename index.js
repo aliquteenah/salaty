@@ -1,18 +1,45 @@
 import express from 'express';
-import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, delay } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import fetch from 'node-fetch';
+import fs from 'fs';
+import path from 'path';
 
 import { restoreSubscribersFromFirebase, saveSubscribersToFirebase, restoreAuthFromFirebase, saveAuthToFirebase } from './config/firebase.js';
-import { getFormattedDate } from './utils/helpers.js';
+import { unwrap, getText, getFormattedDate } from './utils/helpers.js';
+import { messageStore, saveMedia, handleAntiDeleteAndEdit } from './features/antiDelete.js';
+import { sendHumanTextToSpeech, sendTransparentSticker, animateMyMessage } from './features/ttsSticker.js';
+import { startReminderLoop, handleRemindersAndWeather } from './features/remindersWeather.js';
 import { quranTimers, sequentialQuranProgress, handleQuranCommands } from './features/quran.js';
 import { handleHadithCommands, getRandomHadith } from './features/hadith.js';
-import { getPlace, getPrayerTimings, formatTimingsSchedule, startPrayerCheckLoop } from './features/prayer.js';
+import { getPlace, getPrayerTimings, formatTimingsSchedule, startPrayerCheckLoop, handlePrayerCommands } from './features/prayer.js';
+
+const HELP_TEXT = `📖 *قائمة الأوامر الشاملة*
+
+🎙️ *.حامد نص* أو *.صوت نص* ➔ تحويل النص إلى صوت رجالي
+🎙️ *.صالحة نص* ➔ تحويل النص إلى صوت أنثوي
+🖼️ *.ملصق نص* ➔ صنع ملصق شفاف بنص
+⏰ *.ذكرني 30د نص* ➔ ضبط تذكير شخصي
+🌤️ *.طقس مدينة* ➔ حالة الطقس المباشرة
+🕌 *اشتراك مدينة* ➔ اشتراك بمواقيت الصلاة والتنبيهات
+🕌 *تعديل مدينة* ➔ تعديل مدينة مواقيت الصلاة
+🛑 *إلغاء الاشتراك* ➔ إلغاء التنبيهات للصلاة
+🕌 *صلاتي* ➔ عرض مواقيت اليوم
+🎧 *صوت* أو *قرآن* ➔ الاستماع بالتلاوات والترتيب
+📜 *حديث 2د* ➔ تذكيرات الأحاديث
+🧹 *.تنظيف* ➔ تفريغ الملفات المؤقتة
+📖 *.مساعدة* ➔ عرض هذه القائمة
+
+⚙️ *ميزات تلقائية مفعّلة:*
+• كشف الرسائل النصية المحذوفة
+• كشف الوسائط المحذوفة
+• كشف الرسائل المعدّلة
+• كتابة حيّة تفاعلية لرسائلك`;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.get('/', (req, res) => res.send('🕌 البوت الشامل يعمل بنجاح  بـ!'));
+app.get('/', (req, res) => res.send('🕌 البوت الشامل يعمل بنجاح ومربوط بـ Firebase!'));
 app.listen(PORT, '0.0.0.0', () => console.log(`✅ خادم الويب يعمل على المنفذ: ${PORT}`));
 
 const RENDER_URL = process.env.RENDER_EXTERNAL_URL;
@@ -23,6 +50,24 @@ if (RENDER_URL) {
 let subscribers = {};
 let hadithSubscribers = {};
 const PHONE_NUMBER = "966551138192";
+
+async function cleanTempFiles(sock, jid, msgKey) {
+    try {
+        await sock.sendMessage(jid, { text: "⏳ جاري تنظيف الملفات المؤقتة والذاكرة...", edit: msgKey });
+        let deletedCount = 0;
+        const currentDir = process.cwd();
+        fs.readdirSync(currentDir).forEach((file) => {
+            if (file.startsWith('temp_') || file.endsWith('.tmp') || file.endsWith('.log')) {
+                try { fs.unlinkSync(path.join(currentDir, file)); deletedCount++; } catch (e) {}
+            }
+        });
+        messageStore.clear();
+        await delay(1000);
+        await sock.sendMessage(jid, { text: `🧹 *تم التنظيف بنجاح!*\n✅ تم حذف ${deletedCount} ملفاً مؤقتاً.`, edit: msgKey });
+    } catch (err) {
+        await sock.sendMessage(jid, { text: "❌ حدث خطأ أثناء التنظيف.", edit: msgKey });
+    }
+}
 
 async function startBot() {
     await restoreAuthFromFirebase();
@@ -63,35 +108,53 @@ async function startBot() {
         const { connection, lastDisconnect } = update;
         if (connection === 'close') {
             const closeCode = lastDisconnect?.error?.output?.statusCode;
-            if (closeCode === 440) {
+            if (closeCode === DisconnectReason.loggedOut) {
+                console.log("تم تسجيل الخروج.");
+            } else if (closeCode === 440) {
                 setTimeout(startBot, 15000);
-            } else if (closeCode !== DisconnectReason.loggedOut) {
+            } else {
                 setTimeout(startBot, 3000);
             }
         } else if (connection === 'open') {
-            console.log('✅ تم تسجيل الدخول بنجاح وتفعيل البوت!');
+            console.log('✅ تم تسجيل الدخول بنجاح وتفعيل البوت بكافة ميزاته الشاملة!');
             await saveAuthToFirebase();
             startPrayerCheckLoop(sock, subscribers, hadithSubscribers);
+            startReminderLoop(sock);
         }
     });
 
-    sock.ev.on('messages.upsert', async (m) => {
-        try {
-            const msg = m.messages[0];
-            if (!msg || !msg.message) return;
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        if (type !== 'notify') return;
+
+        for (const msg of messages) {
+            if (!msg.message) continue;
+
+            const m = unwrap(msg.message);
+            if (!m) continue;
 
             const targetJid = msg.key.remoteJid;
-            const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
-            const cleanText = text.toLowerCase();
+            const msgId = msg.key.id;
+            const proto = m.protocolMessage;
 
-            // أسباب الإيقاف المخصصة
+            if (proto) {
+                await handleAntiDeleteAndEdit(sock, msg, proto);
+                continue;
+            }
+
+            messageStore.set(msgId, { key: msg.key, message: m });
+            setTimeout(() => messageStore.delete(msgId), 30 * 60 * 1000);
+            saveMedia(sock, msg, m);
+
+            const originalText = getText(m) || '';
+            const cleanText = originalText.trim().toLowerCase();
+
             if (cleanText === 'ايقاف الحديث' || cleanText === 'إيقاف الحديث') {
                 if (hadithSubscribers[targetJid]) {
                     delete hadithSubscribers[targetJid];
                     await saveSubscribersToFirebase(subscribers, hadithSubscribers);
                     await sock.sendMessage(targetJid, { text: `🛑 *تم إيقاف التذكير الدوري بالأحاديث بنجاح.*` }, { quoted: msg });
                 } else await sock.sendMessage(targetJid, { text: `ℹ️ لا يوجد تذكير بالأحاديث مفعّل لديك.` }, { quoted: msg });
-                return;
+                continue;
             }
 
             if (cleanText === 'ايقاف القران' || cleanText === 'إيقاف القرآن') {
@@ -101,7 +164,7 @@ async function startBot() {
                     delete sequentialQuranProgress[targetJid];
                     await sock.sendMessage(targetJid, { text: `🛑 *تم إيقاف الإرسال التلقائي للقرآن بنجاح.*` }, { quoted: msg });
                 } else await sock.sendMessage(targetJid, { text: `ℹ️ لا يوجد إرسال تلقائي للقرآن مفعّل لديك.` }, { quoted: msg });
-                return;
+                continue;
             }
 
             if (cleanText === 'إيقاف' || cleanText === 'ايقاف') {
@@ -109,23 +172,48 @@ async function startBot() {
                 if (quranTimers[targetJid]) { clearInterval(quranTimers[targetJid]); delete quranTimers[targetJid]; delete sequentialQuranProgress[targetJid]; stopped = true; }
                 if (hadithSubscribers[targetJid]) { delete hadithSubscribers[targetJid]; await saveSubscribersToFirebase(subscribers, hadithSubscribers); stopped = true; }
                 await sock.sendMessage(targetJid, { text: stopped ? '🛑 تم إيقاف جميع التذكيرات التلقائية بنجاح.' : 'ℹ️ لا يوجد تذكير تلقائي مفعّل لديك.' }, { quoted: msg });
-                return;
+                continue;
             }
 
-            // توجيه الأوامر المباشرة للميزات
-            const handledQuran = await handleQuranCommands(sock, targetJid, text, cleanText, msg);
-            if (handledQuran) return;
+            if (await handleQuranCommands(sock, targetJid, originalText, cleanText, msg)) continue;
+            if (await handleHadithCommands(sock, targetJid, originalText, subscribers, hadithSubscribers, msg)) continue;
+            if (await handlePrayerCommands(sock, targetJid, originalText, cleanText, subscribers, hadithSubscribers, msg)) continue;
+            if (await handleRemindersAndWeather(sock, msg, targetJid, originalText)) continue;
 
-            const handledHadith = await handleHadithCommands(sock, targetJid, text, subscribers, hadithSubscribers, msg);
-            if (handledHadith) return;
+            if (cleanText === '.مساعدة' || cleanText === '.مساعده' || cleanText === 'مساعدة') {
+                await sock.sendMessage(targetJid, { text: HELP_TEXT, edit: msg.key.fromMe ? msg.key : undefined });
+                continue;
+            }
 
-            // أوامر الاشتراك والصلوات العامة
+            if (cleanText === '.تنظيف' && msg.key.fromMe) {
+                await cleanTempFiles(sock, targetJid, msg.key);
+                continue;
+            }
+
+            if (msg.key.fromMe) {
+                if (originalText.startsWith('.صوت') || originalText.startsWith('.حامد')) {
+                    const textToSpeech = originalText.replace('.صوت', '').replace('.حامد', '').trim();
+                    if (textToSpeech) await sendHumanTextToSpeech(sock, targetJid, msg.key, textToSpeech, 'hamed');
+                    continue;
+                }
+                if (originalText.startsWith('.صالحة') || originalText.startsWith('.صالحه')) {
+                    const textToSpeech = originalText.replace('.صالحة', '').replace('.صالحه', '').trim();
+                    if (textToSpeech) await sendHumanTextToSpeech(sock, targetJid, msg.key, textToSpeech, 'saliha');
+                    continue;
+                }
+                if (originalText.startsWith('.ملصق')) {
+                    const textToConvert = originalText.replace('.ملصق', '').trim();
+                    if (textToConvert) await sendTransparentSticker(sock, targetJid, msg.key, textToConvert);
+                    continue;
+                }
+            }
+
             if (cleanText.startsWith('اشتراك')) {
-                const cityName = text.replace(/^اشتراك/i, '').trim();
-                if (!cityName) return await sock.sendMessage(targetJid, { text: `❌ يرجى كتابة اسم المدينة بعد كلمة اشتراك.` }, { quoted: msg });
+                const cityName = originalText.replace(/^اشتراك/i, '').trim();
+                if (!cityName) { await sock.sendMessage(targetJid, { text: `❌ يرجى كتابة اسم المدينة بعد كلمة اشتراك.` }, { quoted: msg }); continue; }
 
                 const place = await getPlace(cityName);
-                if (!place) return await sock.sendMessage(targetJid, { text: `❌ لم يتم العثور على المدينة.` }, { quoted: msg });
+                if (!place) { await sock.sendMessage(targetJid, { text: `❌ لم يتم العثور على المدينة.` }, { quoted: msg }); continue; }
 
                 const tz = place.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
                 const rawTimings = await getPrayerTimings(place.latitude, place.longitude, tz);
@@ -135,25 +223,26 @@ async function startBot() {
                     await saveSubscribersToFirebase(subscribers, hadithSubscribers);
                     await sock.sendMessage(targetJid, { text: `✅ *تم الاشتراك بنجاح!*\n\n📍 *المدينة:* ${place.name}\n\n${getFormattedDate(tz).fullText}\n\n${formatTimingsSchedule(rawTimings, tz)}\n\n───────────────\n${await getRandomHadith()}` }, { quoted: msg });
                 }
+                continue;
             }
 
-            else if (cleanText === 'صلاتي' || cleanText === 'مواقتي') {
+            if (cleanText === 'صلاتي' || cleanText === 'مواقتي') {
                 const sub = subscribers[targetJid];
-                if (!sub) return await sock.sendMessage(targetJid, { text: `غير مشترك حالياً. أرسل *اشتراك اسم_المدينة* للتفعيل.` }, { quoted: msg });
+                if (!sub) { await sock.sendMessage(targetJid, { text: `غير مشترك حالياً. أرسل *اشتراك اسم_المدينة* للتفعيل.` }, { quoted: msg }); continue; }
                 await sock.sendMessage(targetJid, { text: `🕌 *مواقيت الصلاة*\n\n📍 *المدينة:* ${sub.cityName}\n\n${getFormattedDate(sub.timezone).fullText}\n\n${formatTimingsSchedule(sub.rawTimings || {}, sub.timezone)}` }, { quoted: msg });
+                continue;
             }
 
-            else if (cleanText === 'فحص' || cleanText === 'ping') {
-                await sock.sendMessage(targetJid, { text: `✅ البوت شغال ومتصل بنجاح مع المعمارية الجديدة!` }, { quoted: msg });
+            if (cleanText === 'فحص' || cleanText === 'ping') {
+                await sock.sendMessage(targetJid, { text: `✅ البوت شغال ومتصل بنجاح بكافة ميزاته الشاملة!` }, { quoted: msg });
+                continue;
             }
 
-            else if (cleanText === '.مساعدة' || cleanText === 'مساعدة') {
-                await sock.sendMessage(targetJid, { text: `🕌 *بوت التذكير والإشعار الإسلامي الشامل*\n\n• *اشتراك اسم_المدينة* ➔ الاشتراك بمواقيت الصلاة.\n• *صلاتي* ➔ عرض جدول أوقات اليوم.\n• *صوت* أو *قرآن* ➔ اختيار قارئ وسماع آيات قرآنية.\n• *حديث 2د* ➔ تفعيل تذكير بالأحاديث والشرح.\n• *إيقاف القرآن* ➔ إيقاف الإرسال التلقائي للتلاوات الصوتية.\n• *إيقاف الحديث* ➔ إيقاف التذكير التلقائي بالأحاديث.\n• *إيقاف* ➔ إيقاف كافة التكرارات التلقائية معاً.` }, { quoted: msg });
+            if (msg.key.fromMe && originalText.length > 1 && !originalText.startsWith('.')) {
+                await animateMyMessage(sock, targetJid, msg.key, originalText, 80);
             }
-
-        } catch (err) {}
+        }
     });
 }
 
 startBot();
- 
