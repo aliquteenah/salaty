@@ -1,45 +1,145 @@
-import sharp from 'sharp';
+import fs from 'fs';
+import path from 'path';
+import axios from 'axios';
+import { toEnDigits, pad, selfJid } from '../utils/helpers.js';
 
-export async function sendTransparentSticker(sock, jid, msg, text) {
+const REM_FILE = path.join(process.cwd(), 'reminders.json');
+let reminders = [];
+try { reminders = JSON.parse(fs.readFileSync(REM_FILE, 'utf8')); } catch (e) {}
+const saveReminders = () => { try { fs.writeFileSync(REM_FILE, JSON.stringify(reminders)); } catch (e) {} };
+
+const UNIT_MS = {
+    'ثانية': 1000, 'ثواني': 1000, 'ث': 1000, s: 1000,
+    'دقيقة': 60000, 'دقائق': 60000, 'د': 60000, m: 60000,
+    'ساعة': 3600000, 'ساعات': 3600000, 'س': 3600000, h: 3600000,
+    'يوم': 86400000, 'ايام': 86400000, 'أيام': 86400000, 'ي': 86400000, d: 86400000
+};
+
+function parseReminder(raw) {
+    const s = toEnDigits(raw.trim());
+    let mt = s.match(/^(\d+)\s*(ثانية|ثواني|دقيقة|دقائق|ساعة|ساعات|يوم|ايام|أيام|ث|د|س|ي|s|m|h|d)\s+([\s\S]+)$/i);
+    if (mt) return { ts: Date.now() + Number(mt[1]) * UNIT_MS[mt[2].toLowerCase()], text: mt[3].trim() };
+
+    mt = s.match(/^(\d{1,2}):(\d{2})\s+([\s\S]+)$/);
+    if (mt) {
+        const d = new Date();
+        d.setHours(Number(mt[1]), Number(mt[2]), 0, 0);
+        if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
+        return { ts: d.getTime(), text: mt[3].trim() };
+    }
+    return null;
+}
+
+const fmtWhen = (ts) => {
+    const d = new Date(ts);
+    return `${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+let loopSock = null;
+let loopTimer = null;
+
+export function startReminderLoop(sock) {
+    loopSock = sock;
+    if (loopTimer) return;
+    loopTimer = setInterval(async () => {
+        if (!loopSock) return;
+        const now = Date.now();
+        const due = reminders.filter((r) => r.ts <= now);
+        for (const r of due) {
+            try {
+                const target = r.jid || selfJid(loopSock);
+                await loopSock.sendMessage(target, { text: `⏰ *تذكير:*\n${r.text}` });
+                reminders = reminders.filter((x) => x.id !== r.id);
+                saveReminders();
+            } catch (e) {}
+        }
+    }, 15000);
+}
+
+function weatherDesc(code) {
+    if (code === 0) return '☀️ صافٍ';
+    if (code <= 2) return '⛅ غائم جزئياً';
+    if (code === 3) return '☁️ غائم';
+    if (code === 45 || code === 48) return '🌫️ ضباب';
+    if (code >= 51 && code <= 57) return '🌦️ رذاذ';
+    if (code >= 61 && code <= 67) return '🌧️ مطر';
+    if ((code >= 71 && code <= 77) || code === 85 || code === 86) return '❄️ ثلوج';
+    if (code >= 80 && code <= 82) return '🌦️ زخات مطر';
+    if (code >= 95) return '⛈️ عاصفة رعدية';
+    return '🌡️ غير محدد';
+}
+
+export async function weatherText(city) {
     try {
-        await sock.sendMessage(jid, { text: "⏳ جاري إنشاء الملصق..." }, { quoted: msg });
+        const geoRes = await axios.get(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=ar`, { timeout: 10000 });
+        const place = geoRes.data?.results?.[0];
+        if (!place) return `❌ لم أجد المدينة "${city}"`;
 
-        // تنظيف النص وتجنب الأخطاء
-        const safeText = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const weatherRes = await axios.get(`https://api.open-meteo.com/v1/forecast?latitude=${place.latitude}&longitude=${place.longitude}&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=1`, { timeout: 10000 });
+        
+        const c = weatherRes.data.current;
+        const d = weatherRes.data.daily;
+        const r = (n) => Math.round(n);
 
-        // إنشاء رسم SVG شفاف مع نص محدد باللون الأبيض والأسود
-        const svgImage = `
-        <svg width="512" height="512" xmlns="http://www.w3.org/2000/svg">
-            <style>
-                .text {
-                    fill: white;
-                    stroke: black;
-                    stroke-width: 6px;
-                    paint-order: stroke fill;
-                    font-size: 48px;
-                    font-family: sans-serif;
-                    font-weight: bold;
-                    text-anchor: middle;
-                    dominant-baseline: central;
-                }
-            </style>
-            <text x="50%" y="50%" class="text">${safeText}</text>
-        </svg>`;
-
-        // تحويل SVG مباشرة إلى بفر WebP شفاف
-        const webpBuffer = await sharp(Buffer.from(svgImage))
-            .resize(512, 512)
-            .webp({ quality: 100 })
-            .toBuffer();
-
-        await sock.sendMessage(jid, { sticker: webpBuffer }, { quoted: msg });
-
-    } catch (err) {
-        console.log('خطأ معالجة الملصق:', err.message);
-        await sock.sendMessage(jid, { text: "❌ حدث خطأ أثناء إنتاج الملصق." }, { quoted: msg });
+        return `🌤️ *طقس ${place.name}${place.country ? '، ' + place.country : ''}*\n\n${weatherDesc(c.weather_code)}\n🌡️ الحرارة: ${r(c.temperature_2m)}° (تشعر بـ ${r(c.apparent_temperature)}°)\n🔺 العظمى: ${r(d.temperature_2m_max[0])}° | 🔻 الصغرى: ${r(d.temperature_2m_min[0])}°\n💧 الرطوبة: ${r(c.relative_humidity_2m)}%\n💨 الرياح: ${r(c.wind_speed_10m)} كم/س\n☔ احتمال المطر: ${d.precipitation_probability_max[0] ?? 0}%`;
+    } catch (e) {
+        return `❌ تعذر جلب معلومات الطقس لمدينة "${city}" حالياً.`;
     }
 }
 
-export async function sendHumanTextToSpeech(sock, jid, msg, text, voiceType = 'saliha') {
-    await sock.sendMessage(jid, { text: "ℹ️ ميزة تحويل النص إلى صوت غير مفعّلة حالياً على هذا السيرفر." }, { quoted: msg });
+export async function handleRemindersAndWeather(sock, msg, jid, text) {
+    const isRemind = text.startsWith('.ذكرني') || text.startsWith('ذكرني');
+    const isList = text === '.تذكيراتي' || text === 'تذكيراتي';
+    const isDel = text.startsWith('.حذف_تذكير') || text.startsWith('حذف_تذكير');
+    const isWeather = text.startsWith('.طقس') || text.startsWith('طقس');
+
+    if (!(isRemind || isList || isDel || isWeather)) return false;
+
+    if (isRemind) {
+        const cleanVal = text.replace(/^(\.ذكرني|ذكرني)/i, '');
+        const parsed = parseReminder(cleanVal);
+        if (!parsed) {
+            await sock.sendMessage(jid, { text: '❌ الصيغة الصحيحة:\n*.ذكرني 30د نص التذكير*\nأو: *.ذكرني 14:30 نص التذكير*' }, { quoted: msg });
+            return true;
+        }
+        reminders.push({ id: `${Date.now()}${Math.floor(Math.random() * 1000)}`, ts: parsed.ts, text: parsed.text, jid });
+        saveReminders();
+        await sock.sendMessage(jid, { text: `✅ تم ضبط التذكير بنجاح\n📝 ${parsed.text}\n🕒 ${fmtWhen(parsed.ts)}` }, { quoted: msg });
+        return true;
+    }
+
+    if (isList) {
+        const list = reminders.filter(r => r.jid === jid).sort((a, b) => a.ts - b.ts);
+        if (!list.length) {
+            await sock.sendMessage(jid, { text: '📭 لا توجد لديك تذكيرات نشطة حالياً.' }, { quoted: msg });
+        } else {
+            const lines = list.map((r, i) => `${i + 1}. ${r.text}\n   🕒 ${fmtWhen(r.ts)}`);
+            await sock.sendMessage(jid, { text: `⏰ *قائمة تذكيراتك:*\n\n${lines.join('\n\n')}` }, { quoted: msg });
+        }
+        return true;
+    }
+
+    if (isDel) {
+        const cleanVal = text.replace(/^(\.حذف_تذكير|حذف_تذكير)/i, '').trim();
+        const n = parseInt(toEnDigits(cleanVal), 10);
+        const list = reminders.filter(r => r.jid === jid).sort((a, b) => a.ts - b.ts);
+        if (!n || !list[n - 1]) {
+            await sock.sendMessage(jid, { text: '❌ رقم غير صحيح. أرسل *تذكيراتي* لمعرفة الأرقام.' }, { quoted: msg });
+        } else {
+            const target = list[n - 1];
+            reminders = reminders.filter((r) => r.id !== target.id);
+            saveReminders();
+            await sock.sendMessage(jid, { text: `🗑️ تم حذف التذكير: ${target.text}` }, { quoted: msg });
+        }
+        return true;
+    }
+
+    if (isWeather) {
+        const city = text.replace(/^(\.طقس|طقس)/i, '').trim() || 'الرياض';
+        const resText = await weatherText(city);
+        await sock.sendMessage(jid, { text: resText }, { quoted: msg });
+        return true;
+    }
+
+    return false;
 }
