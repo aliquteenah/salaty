@@ -1,27 +1,14 @@
-import { delay } from '@whiskeysockets/baileys';
 import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-export async function animateMyMessage(sock, jid, msgKey, fullText, delayMs = 80) {
-    if (!fullText || fullText.length <= 1) return;
-    let currentText = fullText[0];
-    try { await sock.sendMessage(jid, { text: currentText, edit: msgKey }); } catch (e) { return; }
-
-    for (let i = 1; i < fullText.length; i++) {
-        currentText += fullText[i];
-        await delay(delayMs);
-        try { await sock.sendMessage(jid, { text: currentText, edit: msgKey }); } catch (err) { break; }
-    }
-}
-
-export async function sendTransparentSticker(sock, jid, msgKey, text) {
+export async function sendTransparentSticker(sock, jid, msg, text) {
     const pngPath = path.join(process.cwd(), `temp_${Date.now()}_stk.png`);
     const webpPath = path.join(process.cwd(), `temp_${Date.now()}_stk.webp`);
     const fontPath = path.join(process.cwd(), 'arabic_font.ttf');
 
     try {
-        await sock.sendMessage(jid, { text: "⏳ جاري تحويل النص إلى ملصق...", edit: msgKey });
+        await sock.sendMessage(jid, { text: "⏳ جاري تحويل النص إلى ملصق..." }, { quoted: msg });
 
         const args = ['-background', 'none'];
         if (fs.existsSync(fontPath)) args.push('-font', fontPath);
@@ -35,16 +22,15 @@ export async function sendTransparentSticker(sock, jid, msgKey, text) {
         execFile('convert', args, (err) => {
             if (err) {
                 console.log('⚠️ أداة ImageMagick/convert غير مثبتة على السيرفر الحالي.');
-                sock.sendMessage(jid, { text: "❌ تعذر إنتاج الملصق، ميزة الملصقات تحتاج حزمة ImageMagick على السيرفر.", edit: msgKey });
+                sock.sendMessage(jid, { text: "❌ تعذر إنتاج الملصق، ميزة الملصقات تحتاج حزمة ImageMagick على السيرفر." }, { quoted: msg });
                 return;
             }
 
             execFile('ffmpeg', ['-y', '-i', pngPath, '-c:v', 'libwebp', webpPath], async (ffErr) => {
                 if (!ffErr && fs.existsSync(webpPath)) {
-                    await sock.sendMessage(jid, { sticker: fs.readFileSync(webpPath) });
-                    await sock.sendMessage(jid, { text: "🎨 تم إنشاء الملصق بنجاح", edit: msgKey });
+                    await sock.sendMessage(jid, { sticker: fs.readFileSync(webpPath) }, { quoted: msg });
                 } else {
-                    await sock.sendMessage(jid, { text: "❌ خطأ في معالجة تحويل الملصق.", edit: msgKey });
+                    await sock.sendMessage(jid, { text: "❌ خطأ في معالجة تحويل الملصق." }, { quoted: msg });
                 }
 
                 if (fs.existsSync(pngPath)) fs.unlinkSync(pngPath);
@@ -53,23 +39,23 @@ export async function sendTransparentSticker(sock, jid, msgKey, text) {
         });
     } catch (err) {
         console.log('خطأ معالجة الملصق:', err.message);
-        await sock.sendMessage(jid, { text: "❌ حدث خطأ أثناء إنشاء الملصق.", edit: msgKey });
+        await sock.sendMessage(jid, { text: "❌ حدث خطأ أثناء إنشاء الملصق." }, { quoted: msg });
     }
 }
 
-export async function sendHumanTextToSpeech(sock, jid, msgKey, text, voiceType = 'saliha') {
+export async function sendHumanTextToSpeech(sock, jid, msg, text, voiceType = 'saliha') {
     const timeStamp = Date.now();
     const mp3Path = path.join(process.cwd(), `temp_speech_${timeStamp}.mp3`);
     const opusPath = path.join(process.cwd(), `temp_speech_${timeStamp}.opus`);
 
     try {
         const speakerName = voiceType === 'saliha' ? 'صالحة 👩' : 'حامد 👨';
-        await sock.sendMessage(jid, { text: `🎙️ جاري توليد الصوت (${speakerName})...`, edit: msgKey });
+        await sock.sendMessage(jid, { text: `🎙️ جاري توليد الصوت (${speakerName})...` }, { quoted: msg });
 
         execFile('gtts-cli', ['--lang', 'ar', '--output', mp3Path, '--', text], (err) => {
             if (err || !fs.existsSync(mp3Path)) {
                 console.log('⚠️ حزمة gtts-cli غير متاحة أو حدث خطأ في النظام:', err?.message);
-                sock.sendMessage(jid, { text: `❌ فشل توليد الصوت (${speakerName}). الخدمة غير مدعومة على البيئة الحالية.`, edit: msgKey });
+                sock.sendMessage(jid, { text: `❌ فشل توليد الصوت (${speakerName}). الخدمة غير مدعومة على البيئة الحالية.` }, { quoted: msg });
                 return;
             }
 
@@ -82,10 +68,9 @@ export async function sendHumanTextToSpeech(sock, jid, msgKey, text, voiceType =
                 '-c:a', 'libopus', '-b:a', '32k', '-vbr', 'on', opusPath
             ], async (ffErr) => {
                 if (!ffErr && fs.existsSync(opusPath)) {
-                    await sock.sendMessage(jid, { audio: fs.readFileSync(opusPath), mimetype: 'audio/ogg; codecs=opus', ptt: true });
-                    await sock.sendMessage(jid, { text: "🎙️ تم إرسال البصمة الصوتية بنجاح", edit: msgKey });
+                    await sock.sendMessage(jid, { audio: fs.readFileSync(opusPath), mimetype: 'audio/ogg; codecs=opus', ptt: true }, { quoted: msg });
                 } else {
-                    await sock.sendMessage(jid, { text: "❌ خطأ في ترميز الصوت مع FFmpeg.", edit: msgKey });
+                    await sock.sendMessage(jid, { text: "❌ خطأ في ترميز الصوت مع FFmpeg." }, { quoted: msg });
                 }
 
                 if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
@@ -94,6 +79,6 @@ export async function sendHumanTextToSpeech(sock, jid, msgKey, text, voiceType =
         });
     } catch (err) {
         console.log('خطأ في تحويل الصوت:', err.message);
-        await sock.sendMessage(jid, { text: "❌ حدث خطأ أثناء تحويل النص لـ صوت.", edit: msgKey });
+        await sock.sendMessage(jid, { text: "❌ حدث خطأ أثناء تحويل النص لـ صوت." }, { quoted: msg });
     }
 }
