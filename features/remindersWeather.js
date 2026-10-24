@@ -46,7 +46,8 @@ export function startReminderLoop(sock) {
         const due = reminders.filter((r) => r.ts <= now);
         for (const r of due) {
             try {
-                await loopSock.sendMessage(selfJid(loopSock), { text: `⏰ *تذكير:*\n${r.text}` });
+                const target = r.jid || selfJid(loopSock);
+                await loopSock.sendMessage(target, { text: `⏰ *تذكير:*\n${r.text}` });
                 reminders = reminders.filter((x) => x.id !== r.id);
                 saveReminders();
             } catch (e) {}
@@ -68,56 +69,72 @@ function weatherDesc(code) {
 }
 
 export async function weatherText(city) {
-    const place = await getJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=ar`).then(j => j.results?.[0]);
-    if (!place) return `❌ لم أجد المدينة "${city}"`;
+    try {
+        const place = await getJson(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=ar`).then(j => j.results?.[0]);
+        if (!place) return `❌ لم أجد المدينة "${city}"`;
 
-    const j = await getJson(`https://api.open-meteo.com/v1/forecast?latitude=${place.latitude}&longitude=${place.longitude}&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=1`);
-    const c = j.current;
-    const d = j.daily;
-    const r = (n) => Math.round(n);
+        const j = await getJson(`https://api.open-meteo.com/v1/forecast?latitude=${place.latitude}&longitude=${place.longitude}&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=1`);
+        const c = j.current;
+        const d = j.daily;
+        const r = (n) => Math.round(n);
 
-    return `🌤️ *طقس ${place.name}${place.country ? '، ' + place.country : ''}*\n\n${weatherDesc(c.weather_code)}\n🌡️ الحرارة: ${r(c.temperature_2m)}° (تشعر بـ ${r(c.apparent_temperature)}°)\n🔺 العظمى: ${r(d.temperature_2m_max[0])}° | 🔻 الصغرى: ${r(d.temperature_2m_min[0])}°\n💧 الرطوبة: ${r(c.relative_humidity_2m)}%\n💨 الرياح: ${r(c.wind_speed_10m)} كم/س\n☔ احتمال المطر: ${d.precipitation_probability_max[0] ?? 0}%`;
+        return `🌤️ *طقس ${place.name}${place.country ? '، ' + place.country : ''}*\n\n${weatherDesc(c.weather_code)}\n🌡️ الحرارة: ${r(c.temperature_2m)}° (تشعر بـ ${r(c.apparent_temperature)}°)\n🔺 العظمى: ${r(d.temperature_2m_max[0])}° | 🔻 الصغرى: ${r(d.temperature_2m_min[0])}°\n💧 الرطوبة: ${r(c.relative_humidity_2m)}%\n💨 الرياح: ${r(c.wind_speed_10m)} كم/س\n☔ احتمال المطر: ${d.precipitation_probability_max[0] ?? 0}%`;
+    } catch (e) {
+        return `❌ تعذر جلب معلومات الطقس لمدينة "${city}" حالياً.`;
+    }
 }
 
 export async function handleRemindersAndWeather(sock, msg, jid, text) {
-    const edit = (t) => sock.sendMessage(jid, { text: t, edit: msg.key });
+    const isRemind = text.startsWith('.ذكرني') || text.startsWith('ذكرني');
+    const isList = text === '.تذكيراتي' || text === 'تذكيراتي';
+    const isDel = text.startsWith('.حذف_تذكير') || text.startsWith('حذف_تذكير');
+    const isWeather = text.startsWith('.طقس') || text.startsWith('طقس');
 
-    if (text.startsWith('.ذكرني')) {
-        const parsed = parseReminder(text.slice('.ذكرني'.length));
-        if (!parsed) return edit('❌ الصيغة: *.ذكرني 30د نص التذكير*\nأو: *.ذكرني 14:30 نص التذكير*');
-        reminders.push({ id: `${Date.now()}${Math.floor(Math.random() * 1000)}`, ts: parsed.ts, text: parsed.text });
+    if (!(isRemind || isList || isDel || isWeather)) return false;
+
+    if (isRemind) {
+        const cleanVal = text.replace(/^(\.ذكرني|ذكرني)/i, '');
+        const parsed = parseReminder(cleanVal);
+        if (!parsed) {
+            await sock.sendMessage(jid, { text: '❌ الصيغة الصحيحة:\n*.ذكرني 30د نص التذكير*\nأو: *.ذكرني 14:30 نص التذكير*' }, { quoted: msg });
+            return true;
+        }
+        reminders.push({ id: `${Date.now()}${Math.floor(Math.random() * 1000)}`, ts: parsed.ts, text: parsed.text, jid });
         saveReminders();
-        await edit(`✅ تم ضبط التذكير\n📝 ${parsed.text}\n🕒 ${fmtWhen(parsed.ts)}`);
+        await sock.sendMessage(jid, { text: `✅ تم ضبط التذكير بنجاح\n📝 ${parsed.text}\n🕒 ${fmtWhen(parsed.ts)}` }, { quoted: msg });
         return true;
     }
 
-    if (text === '.تذكيراتي') {
-        const list = [...reminders].sort((a, b) => a.ts - b.ts);
-        if (!list.length) await edit('📭 لا توجد تذكيرات.');
-        else {
+    if (isList) {
+        const list = reminders.filter(r => r.jid === jid).sort((a, b) => a.ts - b.ts);
+        if (!list.length) {
+            await sock.sendMessage(jid, { text: '📭 لا توجد لديك تذكيرات نشطة حالياً.' }, { quoted: msg });
+        } else {
             const lines = list.map((r, i) => `${i + 1}. ${r.text}\n   🕒 ${fmtWhen(r.ts)}`);
-            await edit(`⏰ *تذكيراتك:*\n\n${lines.join('\n\n')}`);
+            await sock.sendMessage(jid, { text: `⏰ *قائمة تذكيراتك:*\n\n${lines.join('\n\n')}` }, { quoted: msg });
         }
         return true;
     }
 
-    if (text.startsWith('.حذف_تذكير')) {
-        const n = parseInt(toEnDigits(text.slice('.حذف_تذكير'.length).trim()), 10);
-        const list = [...reminders].sort((a, b) => a.ts - b.ts);
-        if (!n || !list[n - 1]) await edit('❌ رقم غير صحيح.');
-        else {
+    if (isDel) {
+        const cleanVal = text.replace(/^(\.حذف_تذكير|حذف_تذكير)/i, '').trim();
+        const n = parseInt(toEnDigits(cleanVal), 10);
+        const list = reminders.filter(r => r.jid === jid).sort((a, b) => a.ts - b.ts);
+        if (!n || !list[n - 1]) {
+            await sock.sendMessage(jid, { text: '❌ رقم غير صحيح. أرسل *تذكيراتي* لمعرفة الأرقام.' }, { quoted: msg });
+        } else {
             const target = list[n - 1];
             reminders = reminders.filter((r) => r.id !== target.id);
             saveReminders();
-            await edit(`🗑️ تم حذف التذكير: ${target.text}`);
+            await sock.sendMessage(jid, { text: `🗑️ تم حذف التذكير: ${target.text}` }, { quoted: msg });
         }
         return true;
     }
 
-    if (text === '.طقس' || text.startsWith('.طقس ')) {
-        const city = text.slice('.طقس'.length).trim() || 'الرياض';
-        await edit('⏳ جاري جلب الطقس...');
-        await edit(await weatherText(city));
+    if (isWeather) {
+        const city = text.replace(/^(\.طقس|طقس)/i, '').trim() || 'الرياض';
+        const resText = await weatherText(city);
+        await sock.sendMessage(jid, { text: resText }, { quoted: msg });
         return true;
     }
 
