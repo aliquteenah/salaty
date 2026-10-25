@@ -8,32 +8,27 @@ import path from 'path';
 import { restoreSubscribersFromFirebase, saveSubscribersToFirebase, restoreAuthFromFirebase, saveAuthToFirebase } from './config/firebase.js';
 import { unwrap, getText, getFormattedDate } from './utils/helpers.js';
 import { messageStore, saveMedia, handleAntiDeleteAndEdit } from './features/antiDelete.js';
-import { sendTransparentSticker, sendHumanTextToSpeech } from './features/ttsSticker.js';
+import { sendHumanTextToSpeech, sendTransparentSticker } from './features/ttsSticker.js';
 import { startReminderLoop, handleRemindersAndWeather } from './features/remindersWeather.js';
 import { quranTimers, sequentialQuranProgress, handleQuranCommands } from './features/quran.js';
 import { handleHadithCommands, getRandomHadith } from './features/hadith.js';
-import { getPlace, getPrayerTimings, formatTimingsSchedule, startPrayerCheckLoop, handlePrayerCommands } from './features/prayer.js';
+import { getPlace, getPrayerTimings, formatTimingsSchedule, startPrayerCheckLoop, handlePrayerCommands, makePrayerCard } from './features/prayer.js';
 
-const HELP_TEXT = `📖 *قائمة الأوامر الشاملة (للكل)*
-
-🎙️ *.حامد نص* أو *.صوت نص* ➔ تحويل النص إلى صوت رجالي
-🎙️ *.صالحة نص* ➔ تحويل النص إلى صوت أنثوي
-🖼️ *.ملصق نص* ➔ صنع ملصق بنص
-⏰ *.ذكرني 30د نص* ➔ ضبط تذكير شخصي
-🌤️ *.طقس مدينة* ➔ حالة الطقس المباشرة
-🕌 *اشتراك مدينة* ➔ اشتراك بمواقيت الصلاة والتنبيهات
-🕌 *تعديل مدينة* ➔ تعديل مدينة مواقيت الصلاة
-🛑 *إلغاء الاشتراك* ➔ إلغاء التنبيهات للصلاة
-🕌 *صلاتي* ➔ عرض مواقيت اليوم
-🎧 *صوت* أو *قرآن* ➔ الاستماع بالتلاوات والترتيب
-📜 *حديث 2د* ➔ تذكيرات الأحاديث
-🧹 *.تنظيف* ➔ تفريغ الملفات المؤقتة (للمطور)
-📖 *.مساعدة* ➔ عرض هذه القائمة
-
-⚙️ *ميزات تلقائية مفعّلة:*
-• كشف الرسائل النصية المحذوفة
-• كشف الوسائط المحذوفة
-• كشف الرسائل المعدّلة`;
+const HELP_TEXT = `╮───────────────╭ـ
+│「❥📲 **قائمة الأوامر** 📃❥」
+│───────────────╰ـ
+*╮ ───═┅─┅─┅═─── ╭*
+│⚝ ⃟🎖️❯ 🎙️ *.حامد نص* ➔ تحويل لـ صوت رجالي
+│⚝ ⃟🧰❯ 🎙️ *.صالحة نص* ➔ تحويل لـ صوت أنثوي
+│⚝ ⃟⚓❯ 🖼️ *.ملصق نص* ➔ صنع ملصق شفاف
+│⚝ ⃟💎❯ ⏰ *.ذكرني 30د نص* ➔ ضبط تذكير شخصي
+│⚝ ⃟👾❯ 🌤️ *.طقس مدينة* ➔ حالة الطقس Mباشر
+│⚝ ⃟🪙❯ 🕌 *اشتراك مدينة* ➔ تفعيل تنبيهات الصلاة
+│⚝ ⃟🎟️❯ 🕌 *صلاتي* ➔ عرض مواقيت اليوم
+│⚝ ⃟🎖️❯ 🎧 *صوت / قرآن* ➔ التلاوات الصوتية
+│⚝ ⃟🧰❯ 📜 *حديث 2د* ➔ تذكير الأحاديث الدوري
+│⚝ ⃟⚓❯ 🛑 *إيقاف* ➔ إلغاء التنبيهات التلقائية
+*╯ ───═┅─┅─┅═─── ╰*`;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -218,7 +213,9 @@ async function startBot() {
                 if (rawTimings) {
                     subscribers[targetJid] = { cityName: place.name, country: place.country || '', lat: place.latitude, lng: place.longitude, timezone: tz, rawTimings, lastFetchDate: new Date().toLocaleDateString('en-CA', { timeZone: tz }) };
                     await saveSubscribersToFirebase(subscribers, hadithSubscribers);
-                    await sock.sendMessage(targetJid, { text: `✅ *تم الاشتراك بنجاح!*\n\n📍 *المدينة:* ${place.name}\n\n${getFormattedDate(tz).fullText}\n\n${formatTimingsSchedule(rawTimings, tz)}\n\n───────────────\n${await getRandomHadith()}` }, { quoted: msg });
+                    
+                    const card = makePrayerCard('تم الاشتراك بنجاح', place.name, place.country || '', formatTimingsSchedule(rawTimings, tz), await getRandomHadith());
+                    await sock.sendMessage(targetJid, { text: card }, { quoted: msg });
                 }
                 continue;
             }
@@ -226,7 +223,8 @@ async function startBot() {
             if (cleanText === 'صلاتي' || cleanText === 'مواقتي') {
                 const sub = subscribers[targetJid];
                 if (!sub) { await sock.sendMessage(targetJid, { text: `غير مشترك حالياً. أرسل *اشتراك اسم_المدينة* للتفعيل.` }, { quoted: msg }); continue; }
-                await sock.sendMessage(targetJid, { text: `🕌 *مواقيت الصلاة*\n\n📍 *المدينة:* ${sub.cityName}\n\n${getFormattedDate(sub.timezone).fullText}\n\n${formatTimingsSchedule(sub.rawTimings || {}, sub.timezone)}` }, { quoted: msg });
+                const card = makePrayerCard('مواقيت الصلاة اليومية', sub.cityName, sub.country || '', formatTimingsSchedule(sub.rawTimings || {}, sub.timezone));
+                await sock.sendMessage(targetJid, { text: card }, { quoted: msg });
                 continue;
             }
 
