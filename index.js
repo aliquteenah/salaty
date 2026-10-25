@@ -14,6 +14,13 @@ import { quranTimers, sequentialQuranProgress, handleQuranCommands } from './fea
 import { handleHadithCommands, getRandomHadith } from './features/hadith.js';
 import { getPlace, getPrayerTimings, formatTimingsSchedule, startPrayerCheckLoop, handlePrayerCommands, makePrayerCard } from './features/prayer.js';
 
+// استيراد الميزات المفصولة الجديدة
+import { handleQuranTafseerCommands } from './features/quranTafseer.js';
+import { handleDuaCommands } from './features/duas.js';
+import { handleHisnCommands } from './features/hisnMuslim.js';
+import { handleQuoteCommands } from './features/quotes.js';
+import { handleThoughtCommands } from './features/thoughts.js';
+
 const HELP_TEXT = `╮───────────────╭ـ
 │「❥📲 **قائمة الأوامر** 📃❥」
 │───────────────╰ـ
@@ -22,11 +29,16 @@ const HELP_TEXT = `╮───────────────╭ـ
 │⚝ ⃟🧰❯ 🎙️ *.صالحة نص* ➔ تحويل لـ صوت أنثوي
 │⚝ ⃟⚓❯ 🖼️ *.ملصق نص* ➔ صنع ملصق شفاف
 │⚝ ⃟💎❯ ⏰ *.ذكرني 30د نص* ➔ ضبط تذكير شخصي
-│⚝ ⃟👾❯ 🌤️ *.طقس مدينة* ➔ حالة الطقس Mباشر
+│⚝ ⃟👾❯ 🌤️ *.طقس مدينة* ➔ حالة الطقس المباشر
 │⚝ ⃟🪙❯ 🕌 *اشتراك مدينة* ➔ تفعيل تنبيهات الصلاة
 │⚝ ⃟🎟️❯ 🕌 *صلاتي* ➔ عرض مواقيت اليوم
 │⚝ ⃟🎖️❯ 🎧 *صوت / قرآن* ➔ التلاوات الصوتية
-│⚝ ⃟🧰❯ 📜 *حديث 2د* ➔ تذكير الأحاديث الدوري
+│⚝ ⃟🧰❯ 📖 *.آية* (أو *.آية 5د*) ➔ آيات مع التفسير
+│⚝ ⃟⚓❯ 🤲 *.دعاء* (أو *.دعاء 5د*) ➔ أدعية قرآنية
+│⚝ ⃟💎❯ 🛡️ *.حصن* (أو *.حصن 5د*) ➔ أذكار حصن المسلم
+│⚝ ⃟👾❯ 💡 *.حكمة* (أو *.حكمة 5د*) ➔ حكم واقتباسات
+│⚝ ⃟🪙❯ ✍️ *.خاطرة* (أو *.خاطرة 5د*) ➔ خواطر وأدب
+│⚝ ⃟🎟️❯ 📜 *حديث 2د* ➔ تذكير الأحاديث الدوري
 │⚝ ⃟⚓❯ 🛑 *إيقاف* ➔ إلغاء التنبيهات التلقائية
 *╯ ───═┅─┅─┅═─── ╰*`;
 
@@ -167,6 +179,14 @@ async function startBot() {
                 continue;
             }
 
+            // تنفيذ معالجات الميزات الجديدة المفصولة
+            if (await handleQuranTafseerCommands(sock, msg, targetJid, cleanText)) continue;
+            if (await handleDuaCommands(sock, msg, targetJid, cleanText)) continue;
+            if (await handleHisnCommands(sock, msg, targetJid, cleanText)) continue;
+            if (await handleQuoteCommands(sock, msg, targetJid, cleanText)) continue;
+            if (await handleThoughtCommands(sock, msg, targetJid, cleanText)) continue;
+
+            // تنفيذ معالجات الميزات المعتادة
             if (await handleQuranCommands(sock, targetJid, originalText, cleanText, msg)) continue;
             if (await handleHadithCommands(sock, targetJid, originalText, subscribers, hadithSubscribers, msg)) continue;
             if (await handlePrayerCommands(sock, targetJid, originalText, cleanText, subscribers, hadithSubscribers, msg)) continue;
@@ -237,3 +257,4 @@ async function startBot() {
 }
 
 startBot();
+ 
