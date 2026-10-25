@@ -3,9 +3,7 @@ import { saveSubscribersToFirebase } from '../config/firebase.js';
 
 export const BACKUP_HADITHS = [
     { hadith: "«إِنَّ الصَّلَاةَ كَانَتْ عَلَى الْمُؤْمِنِينَ كِتَابًا مَوْقُوتًا»", source: "سورة النساء - آية 103" },
-    { hadith: "«بُنِيَ الإِسْلاَمُ عَلَى خَمْسٍ: شَهَادَةِ أَنْ لاَ إِلَهَ إِلاَّ اللَّهُ وَأَنَّ مُحَمَّدًا رَسُولُ اللَّهِ، وَإِقَامِ الصَّلاَةِ، وَإِيتَاءِ الزَّكَاةِ، وَالحَجِّ، وَصَوْمِ رَمَضَانَ»", source: "صحيح البخاري" },
-    { hadith: "«سُئِلَ النَّبِيُّ ﷺ: أَيُّ الأَعْمَالِ أَفْضَلُ؟ قَالَ: الصَّلاَةُ لِوَقْتِهَا»", source: "متفق عليه" },
-    { hadith: "«مَنْ صَلَّى الْبَرْدَيْنِ دَخَلَ الْجَنَّةَ»", source: "صحيح البخاري" }
+    { hadith: "«بُنِيَ الإِسْلاَمُ عَلَى خَمْسٍ: شَهَادَةِ أَنْ لاَ إِلَهَ إِلاَّ اللَّهُ وَأَنَّ مُحَمَّدًا رَسُولُ اللَّهِ، وَإِقَامِ الصَّلاَةِ، وَإِيتَاءِ الزَّكَاةِ، وَالحَجِّ، وَصَوْمِ رَمَضَانَ»", source: "صحيح البخاري" }
 ];
 
 export const BETWEEN_AZAN_IQAMA_DUAS = [
@@ -20,7 +18,7 @@ export function getRandomItem(arr) {
 
 export async function getRandomHadith() {
     try {
-        const categories = [2, 3, 4, 5]; 
+        const categories = [2, 3, 4, 5];
         const randomCat = getRandomItem(categories);
         const res = await fetch(`https://hadeethenc.com/api/v1/hadeeths/list/?language=ar&category_id=${randomCat}&page=1&per_page=20`);
 
@@ -32,11 +30,7 @@ export async function getRandomHadith() {
 
                 if (detailRes.ok) {
                     const detailData = await detailRes.json();
-                    let text = `📜 *حديث اليوم (من موسوعة HadeethEnc):*\n«${detailData.hadeeth.trim()}»`;
-                    if (detailData.explanation) text += `\n\n💡 *الشرح:* ${detailData.explanation.trim()}`;
-                    if (detailData.attribution) text += `\n\n📚 *المصدر:* ${detailData.attribution}`;
-                    if (detailData.grade) text += `\n✨ *درجة الحديث:* ${detailData.grade}`;
-                    return text;
+                    return `📜 *حديث اليوم:*\n«${detailData.hadeeth.trim()}»\n💡 *الشرح:* ${detailData.explanation ? detailData.explanation.trim() : 'لا يوجد'}`;
                 }
             }
         }
@@ -60,16 +54,29 @@ export async function getHadithWithExplanationOnly() {
 
                 if (detailRes.ok) {
                     const detailData = await detailRes.json();
-                    let text = `📜 *حديث نبوي شريف:*\n«${detailData.hadeeth.trim()}»`;
-                    if (detailData.explanation) text += `\n\n💡 *الشرح:* ${detailData.explanation.trim()}`;
-                    return text;
+                    return `╮───────────────╭ـ
+│「❥📲 **الحديث الشريف** 📃❥」
+│───────────────╰ـ
+*╮ ───═┅─┅─┅═─── ╭*
+│⚝ ⃟🎖️❯ 📜 *الحديث:*
+«${detailData.hadeeth.trim()}»
+
+│⚝ ⃟🧰❯ 💡 *الشرح:*
+${detailData.explanation ? detailData.explanation.trim() : 'لا يوجد'}
+*╯ ───═┅─┅─┅═─── ╰*`;
                 }
             }
         }
     } catch (e) {}
 
     const backup = getRandomItem(BACKUP_HADITHS);
-    return `📜 *حديث نبوي شريف:*\n${backup.hadith}`;
+    return `╮───────────────╭ـ
+│「❥📲 **الحديث الشريف** 📃❥」
+│───────────────╰ـ
+*╮ ───═┅─┅─┅═─── ╭*
+│⚝ ⃟🎖️❯ 📜 *الحديث:* ${backup.hadith}
+│⚝ ⃟🧰❯ 📚 *المصدر:* ${backup.source}
+*╯ ───═┅─┅─┅═─── ╰*`;
 }
 
 export async function handleHadithCommands(sock, targetJid, text, subscribers, hadithSubscribers, msg) {
@@ -80,7 +87,15 @@ export async function handleHadithCommands(sock, targetJid, text, subscribers, h
             hadithSubscribers[targetJid] = { intervalMinutes: mins, lastSentTime: Date.now() };
             await saveSubscribersToFirebase(subscribers, hadithSubscribers);
 
-            await sock.sendMessage(targetJid, { text: `✅ *تم تفعيل التذكير الدوري بالأحاديث الشريفة!*\n\nسيتم إرسال حديث نبوي مع الشرح كل *${mins} دقيقة* تلقائياً. 📜✨\n\n_لإيقاف التذكير بالأحاديث أرسل:_ *إيقاف الحديث*` }, { quoted: msg });
+            const card = `╮───────────────╭ـ
+│「❥📲 **تفعيل التذكير** 📃❥」
+│───────────────╰ـ
+*╮ ───═┅─┅─┅═─── ╭*
+│⚝ ⃟🎖️❯ ✅ *تم التفعيل بنجاح*
+│⚝ ⃟🧰❯ 📜 *التكرار:* كل ${mins} دقيقة
+*╯ ───═┅─┅─┅═─── ╰*`;
+
+            await sock.sendMessage(targetJid, { text: card }, { quoted: msg });
             const firstHadith = await getHadithWithExplanationOnly();
             await sock.sendMessage(targetJid, { text: firstHadith });
             return true;
