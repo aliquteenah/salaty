@@ -56,34 +56,36 @@ export function startReminderLoop(sock) {
     }, 15000);
 }
 
-function weatherDesc(code) {
-    if (code === 0) return '☀️ صافٍ';
-    if (code <= 2) return '⛅ غائم جزئياً';
-    if (code === 3) return '☁️ غائم';
-    if (code === 45 || code === 48) return '🌫️ ضباب';
-    if (code >= 51 && code <= 57) return '🌦️ رذاذ';
-    if (code >= 61 && code <= 67) return '🌧️ مطر';
-    if ((code >= 71 && code <= 77) || code === 85 || code === 86) return '❄️ ثلوج';
-    if (code >= 80 && code <= 82) return '🌦️ زخات مطر';
-    if (code >= 95) return '⛈️ عاصفة رعدية';
-    return '🌡️ غير محدد';
-}
-
-export async function weatherText(city) {
+export async function weatherText(cityName) {
     try {
-        const geoRes = await axios.get(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=ar`, { timeout: 10000 });
-        const place = geoRes.data?.results?.[0];
-        if (!place) return `❌ لم أجد المدينة "${city}"`;
+        // استخدام API مباشر وسريع وموثوق للغاية بدعم كامل للغة العربية
+        const url = `https://wttr.in/${encodeURIComponent(cityName)}?format=j1&lang=ar`;
+        const response = await axios.get(url, {
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            timeout: 10000
+        });
 
-        const weatherRes = await axios.get(`https://api.open-meteo.com/v1/forecast?latitude=${place.latitude}&longitude=${place.longitude}&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=1`, { timeout: 10000 });
-        
-        const c = weatherRes.data.current;
-        const d = weatherRes.data.daily;
-        const r = (n) => Math.round(n);
+        const data = response.data;
+        const current = data.current_condition[0];
+        const weatherDesc = current.lang_ar ? current.lang_ar[0].value : current.weatherDesc[0].value;
+        const temp = current.temp_C;
+        const feelsLike = current.FeelsLikeC;
+        const humidity = current.humidity;
+        const wind = current.windspeedKmph;
 
-        return `🌤️ *طقس ${place.name}${place.country ? '، ' + place.country : ''}*\n\n${weatherDesc(c.weather_code)}\n🌡️ الحرارة: ${r(c.temperature_2m)}° (تشعر بـ ${r(c.apparent_temperature)}°)\n🔺 العظمى: ${r(d.temperature_2m_max[0])}° | 🔻 الصغرى: ${r(d.temperature_2m_min[0])}°\n💧 الرطوبة: ${r(c.relative_humidity_2m)}%\n💨 الرياح: ${r(c.wind_speed_10m)} كم/س\n☔ احتمال المطر: ${d.precipitation_probability_max[0] ?? 0}%`;
+        const today = data.weather[0];
+        const maxTemp = today.maxtempC;
+        const minTemp = today.mintempC;
+
+        return `🌤️ *حالة الطقس لمدينة (${cityName})*\n\n` +
+               `📌 *الحالة:* ${weatherDesc}\n` +
+               `🌡️ *الحرارة:* ${temp}°C (الشعور الحقيقي: ${feelsLike}°C)\n` +
+               `🔺 *العظمى:* ${maxTemp}°C | 🔻 *الصغرى:* ${minTemp}°C\n` +
+               `💧 *الرطوبة:* ${humidity}%\n` +
+               `💨 *سرعة الرياح:* ${wind} كم/س`;
+
     } catch (e) {
-        return `❌ تعذر جلب معلومات الطقس لمدينة "${city}" حالياً.`;
+        return `❌ تعذر جلب معلومات الطقس لمدينة "${cityName}" حالياً. التأكد من اسم المدينة وحاول مجدداً.`;
     }
 }
 
