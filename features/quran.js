@@ -57,7 +57,16 @@ export async function sendAyahAndAudio(sock, from, reciter, surahNum = null, aya
         }
 
         const data = response.data.data;
-        const caption = `📖 *سورة ${data.surah.name} - الآية (${data.numberInSurah}/${data.surah.numberOfAyahs})*\n🎙️ *القارئ:* ${reciter.name}\n\n﴿ ${data.text} ﴾`;
+        const caption = `╮───────────────╭ـ
+│「❥📲 **القرآن الكريم** 📃❥」
+│───────────────╰ـ
+*╮ ───═┅─┅─┅═─── ╭*
+│⚝ ⃟🎖️❯ 📖 *سورة:* ${data.surah.name}
+│⚝ ⃟🧰❯ 🔢 *الآية:* (${data.numberInSurah}/${data.surah.numberOfAyahs})
+│⚝ ⃟⚓❯ 🎙️ *القارئ:* ${reciter.name}
+│⚝ ⃟💎❯ 
+│ ﴿ ${data.text} ﴾
+*╯ ───═┅─┅─┅═─── ╰*`;
 
         await sock.sendMessage(from, { text: caption });
 
@@ -73,13 +82,13 @@ export async function sendAyahAndAudio(sock, from, reciter, surahNum = null, aya
                     await sock.sendMessage(from, { audio: fs.readFileSync(tempMp3Path), mimetype: 'audio/mp4', ptt: false });
                 }
             } catch (audioErr) {
-                console.error('⚠️ تعذر تحميل الملف الصوتي للآية:', audioErr.message);
+                console.error('⚠️ تعذر تحميل الصوت:', audioErr.message);
             }
         }
         return data;
     } catch (err) {
-        console.error('خطأ أصل جلب الآية:', err.message);
-        await sock.sendMessage(from, { text: '❌ حدث خطأ أثناء جلب الآية، يرجى المحاولة مرة أخرى.' });
+        console.error('خطأ الآية:', err.message);
+        await sock.sendMessage(from, { text: '❌ حدث خطأ أثناء جلب الآية.' });
         return null;
     } finally {
         if (fs.existsSync(tempMp3Path)) fs.unlinkSync(tempMp3Path);
@@ -100,7 +109,7 @@ export async function sendNextSequentialAyah(sock, targetJid) {
                 delete quranTimers[targetJid];
             }
             delete sequentialQuranProgress[targetJid];
-            await sock.sendMessage(targetJid, { text: `✅ *تمت بحمد الله تلاوة سورة ${ayahData.surah.name} بالكامل (${ayahData.surah.numberOfAyahs} آية).* 🎉\n\n_تم إيقاف الإرسال التلقائي بنجاح._` });
+            await sock.sendMessage(targetJid, { text: `✅ *تمت بحمد الله تلاوة سورة ${ayahData.surah.name} بالكامل.*` });
         } else {
             prog.currentAyah++;
         }
@@ -109,15 +118,17 @@ export async function sendNextSequentialAyah(sock, targetJid) {
 
 export async function handleQuranCommands(sock, targetJid, text, cleanText, msg) {
     if (cleanText === 'صوت' || cleanText === 'قرآن' || cleanText === 'قران' || cleanText === 'آية' || cleanText === 'ايه') {
-        let menuText = "🎧 *اختر القارئ المفضل وطريقة الإرسال:*\n\n";
-        RECITERS.forEach(r => { menuText += `*[ ${r.id} ]* ${r.name}\n`; });
-        menuText += "\n📌 *طرق الإرسال:*\n";
-        menuText += "1️⃣ لإرسال آية عشوائية واحدة: اكتب رقم القارئ فقط (مثال: `1`).\n";
-        menuText += "2️⃣ لإرسال آية محددة نص وصوت: اكتب رقم القارئ ثم رقم السورة ثم رقم الآية (مثال: `13 2 255`).\n";
-        menuText += "3️⃣ لتلاوة سورة كاملة بالترتيب: اكتب رقم القارئ ثم الوقت بالدقائق ثم رقم السورة (مثال: `13 2د 2`).\n";
-        menuText += "4️⃣ للإرسال التلقائي لآيات عشوائية مكررة: اكتب رقم القارئ ثم الدقائق (مثال: `1 2د`).\n\n";
-        menuText += "🛑 لإيقاف تكرار القرآن فقط أرسل: *إيقاف القرآن*\n";
-        menuText += "🛑 لإيقاف تكرار الحديث فقط أرسل: *إيقاف الحديث*";
+        let menuText = `╮───────────────╭ـ
+│「❥📲 **قائمة التلاوات** 📃❥」
+│───────────────╰ـ
+*╮ ───═┅─┅─┅═─── ╭*\n`;
+        RECITERS.forEach(r => { menuText += `│⚝ ⃟💎❯ *[ ${r.id} ]* ${r.name}\n`; });
+        menuText += `*╯ ───═┅─┅─┅═─── ╰*\n\n`;
+        menuText += "📌 *خيارات الإرسال:*\n";
+        menuText += "• آية عشوائية: اكتب رقم القارئ (مثال: `1`).\n";
+        menuText += "• آية محددة: اكتب `13 2 255` (القارئ، السورة، الآية).\n";
+        menuText += "• سورة كاملة: اكتب `13 2د 2` (القارئ، التكرار بالدقائق، السورة).\n\n";
+        menuText += "🛑 لإيقاف التلاوة أرسل: *إيقاف القرآن*";
 
         quranState[targetJid] = { step: 'WAITING_FOR_RECITER' };
         await sock.sendMessage(targetJid, { text: menuText }, { quoted: msg });
@@ -142,7 +153,7 @@ export async function handleQuranCommands(sock, targetJid, text, cleanText, msg)
                 }
 
                 sequentialQuranProgress[targetJid] = { reciter, surahNum, currentAyah: 1 };
-                await sock.sendMessage(targetJid, { text: `📖 تم تفعيل تلاوة سورة رقم (${surahNum}) بالترتيب بصوت *${reciter.name}* كل *${minutes}* دقيقة.\n\n🛑 لإيقاف التلاوة أرسل: *إيقاف القرآن*` }, { quoted: msg });
+                await sock.sendMessage(targetJid, { text: `📖 تم تفعيل تلاوة سورة رقم (${surahNum}) بالترتيب بصوت *${reciter.name}* كل *${minutes}* دقيقة.` }, { quoted: msg });
 
                 await sendNextSequentialAyah(sock, targetJid);
                 quranTimers[targetJid] = setInterval(async () => { await sendNextSequentialAyah(sock, targetJid); }, minutes * 60 * 1000);
@@ -156,7 +167,7 @@ export async function handleQuranCommands(sock, targetJid, text, cleanText, msg)
             const reciter = RECITERS.find(r => r.id === selectedId);
 
             if (reciter) {
-                await sock.sendMessage(targetJid, { text: `⏳ جاري جلب سورة رقم (${surahNum}) الآية (${ayahNum}) بصوت *${reciter.name}*...` }, { quoted: msg });
+                await sock.sendMessage(targetJid, { text: `⏳ جاري جلب سورة رقم (${surahNum}) الآية (${ayahNum})...` }, { quoted: msg });
                 await sendAyahAndAudio(sock, targetJid, reciter, surahNum, ayahNum);
                 delete quranState[targetJid];
                 return true;
@@ -174,11 +185,11 @@ export async function handleQuranCommands(sock, targetJid, text, cleanText, msg)
                 }
 
                 if (minutes && minutes > 0) {
-                    await sock.sendMessage(targetJid, { text: `⏱️ تم تفعيل الإرسال التلقائي لآيات عشوائية بصوت *${reciter.name}* كل *${minutes}* دقيقة.\n\n🛑 لإيقاف التلاوات أرسل: *إيقاف القرآن*` }, { quoted: msg });
+                    await sock.sendMessage(targetJid, { text: `⏱️ تم تفعيل التكرار بصوت *${reciter.name}* كل *${minutes}* دقيقة.` }, { quoted: msg });
                     await sendAyahAndAudio(sock, targetJid, reciter);
                     quranTimers[targetJid] = setInterval(async () => { await sendAyahAndAudio(sock, targetJid, reciter); }, minutes * 60 * 1000);
                 } else {
-                    await sock.sendMessage(targetJid, { text: `⏳ جاري جلب التلاوة بصوت *${reciter.name}*...` }, { quoted: msg });
+                    await sock.sendMessage(targetJid, { text: `⏳ جاري جلب التلاوة...` }, { quoted: msg });
                     await sendAyahAndAudio(sock, targetJid, reciter);
                 }
                 delete quranState[targetJid];
