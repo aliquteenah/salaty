@@ -2,6 +2,18 @@ import { getJson, fmt12, fmtDur, parseTimeToMinutes, getFormattedDate } from '..
 import { getRandomHadith, getRandomItem, BETWEEN_AZAN_IQAMA_DUAS, getHadithWithExplanationOnly } from './hadith.js';
 import { saveSubscribersToFirebase } from '../config/firebase.js';
 
+export function makePrayerCard(title, city, country, bodyContent, extraHadith = '') {
+    return `╮───────────────╭ـ
+│「❥📲 *تنبيه الصلاة* 📃❥」
+│───────────────╰ـ
+*╮ ───═┅─┅─┅═─── ╭*
+│⚝ ⃟🎖️❯ *${title}*
+│⚝ ⃟🧰❯ 📍 *المدينة:* ${city} (${country})
+${bodyContent}
+*╯ ───═┅─┅─┅═─── ╰*
+${extraHadith ? `\n───────────────\n${extraHadith}` : ''}`;
+}
+
 export async function getPlace(cityName) {
     try {
         const cleanName = cityName.trim().toLowerCase();
@@ -36,8 +48,8 @@ export function formatTimingsSchedule(rawTimings = {}, timeZone) {
         { name: 'العشاء', key: 'Isha', icon: '🕌' }
     ];
 
-    const lines = list.map(item => `${item.icon} ${item.name}: ${fmt12(rawTimings?.[item.key] || '')}`).join('\n');
-    return `${lines}\n\n${getNextPrayerInfo(rawTimings, timeZone)}`;
+    const lines = list.map(item => `│⚝ ⃟💎❯ ${item.icon} *${item.name}:* ${fmt12(rawTimings?.[item.key] || '')}`).join('\n');
+    return `${lines}\n│\n${getNextPrayerInfo(rawTimings, timeZone)}`;
 }
 
 export function getNextPrayerInfo(rawTimings = {}, timeZone) {
@@ -62,7 +74,7 @@ export function getNextPrayerInfo(rawTimings = {}, timeZone) {
         if (fajrMin !== null) diffMin = 1440 - nowMin + fajrMin;
     }
 
-    return `⏳ القادمة: *${names[nextKey] || 'الفجر'}* بعد ${fmtDur(diffMin)}`;
+    return `│⚝ ⃟⏳❯ الصلاة القادمة: *${names[nextKey] || 'الفجر'}* بعد ${fmtDur(diffMin)}`;
 }
 
 export async function handlePrayerCommands(sock, targetJid, text, cleanText, subscribers, hadithSubscribers, msg) {
@@ -164,24 +176,33 @@ export function startPrayerCheckLoop(sock, subscribers, hadithSubscribers) {
                     const prayerTotalMin = parseTimeToMinutes(rawTimings[item.key]);
                     if (prayerTotalMin === null) continue;
 
+                    // تنبيه قبل 30 دقيقة
                     const minBefore30 = prayerTotalMin - 30;
                     const key30 = `${jid}_${todayDateStr}_${item.name}_30min`;
                     if (Math.abs(currentTotalMin - minBefore30) <= 1 && !sentReminders.has(key30)) {
                         sentReminders.add(key30);
-                        await sock.sendMessage(jid, { text: `⏳ *تنبيه: قرب صلاة ${item.name}* 🕌\n\n${dateObj.fullText}\n\nتبقّى 30 دقيقة على أذان صلاة *${item.name}* في مدينة *${info.cityName}* (${info.country}).\n\n✨ _جهز نفسك للصلاة وتهيأ للوضوء_\n\n───────────────\n${hadithText}` });
+                        const body = `│⚝ ⃟⚓❯ ⏳ *تبقّى 30 دقيقة على الأذان*\n│⚝ ⃟💎❯ 🕌 *صلاة:* ${item.name}\n│⚝ ⃟👾❯ ✨ _تهيأ للوضوء والصلاة_`;
+                        const card = makePrayerCard(`تذكير بقرب صلاة ${item.name}`, info.cityName, info.country, body, hadithText);
+                        await sock.sendMessage(jid, { text: card });
                     }
 
+                    // تنبيه وقت الأذان
                     const keyExact = `${jid}_${todayDateStr}_${item.name}_exact`;
                     if (Math.abs(currentTotalMin - prayerTotalMin) <= 1 && !sentReminders.has(keyExact)) {
                         sentReminders.add(keyExact);
-                        await sock.sendMessage(jid, { text: `🕌 *حان الآن أذان صلاة ${item.name}* 🌸\n\n${dateObj.fullText}\n\nحان الآن موعد أذان صلاة *${item.name}* حسب التوقيت المحلي لمدينة *${info.cityName}* (${info.country}).\n\n✨ _حيّ على الصلاة.. حيّ على الفلاح_\n\n───────────────\n${hadithText}` });
+                        const body = `│⚝ ⃟⚓❯ 🕌 *حان الآن وقت أذان صلاة ${item.name}*\n│⚝ ⃟💎❯ ✨ _حيّ على الصلاة.. حيّ على الفلاح_`;
+                        const card = makePrayerCard(`أذان صلاة ${item.name}`, info.cityName, info.country, body, hadithText);
+                        await sock.sendMessage(jid, { text: card });
                     }
 
+                    // دعاء بين الأذان والإقامة (بعد 10 دقائق)
                     const minAfter10 = prayerTotalMin + 10;
                     const keyIqama = `${jid}_${todayDateStr}_${item.name}_iqama`;
                     if (Math.abs(currentTotalMin - minAfter10) <= 1 && !sentReminders.has(keyIqama)) {
                         sentReminders.add(keyIqama);
-                        await sock.sendMessage(jid, { text: `🤲 *دعاء بين الأذان والإقامة (وقت مستجاب)* 🌟\n\nقال رسول الله ﷺ: «الدُّعَاءُ لاَ يُرَدُّ بَيْنَ الأَذَانِ وَالإِقَامَةِ»\n\n💡 *مِنَ الأَدْعِيَةِ الْمَأْثُورَةِ:*\n${getRandomItem(BETWEEN_AZAN_IQAMA_DUAS)}\n\n_استغل هذه اللحظات بالدعاء لنفسك ولمن تحب_ 🤍` });
+                        const body = `│⚝ ⃟⚓❯ 🤲 *دعاء بين الأذان والإقامة*\n│⚝ ⃟💎❯ 💡 *الدعاء المستجاب:*\n${getRandomItem(BETWEEN_AZAN_IQAMA_DUAS)}`;
+                        const card = makePrayerCard(`وقت استجابة الدعاء - ${item.name}`, info.cityName, info.country, body);
+                        await sock.sendMessage(jid, { text: card });
                     }
                 }
 
