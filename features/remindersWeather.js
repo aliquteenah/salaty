@@ -48,7 +48,14 @@ export function startReminderLoop(sock) {
         for (const r of due) {
             try {
                 const target = r.jid || selfJid(loopSock);
-                await loopSock.sendMessage(target, { text: `⏰ *تذكير:*\n${r.text}` });
+                const card = `╮───────────────╭ـ
+│「❥📲 **تنبيه شخصي** 📃❥」
+│───────────────╰ـ
+*╮ ───═┅─┅─┅═─── ╭*
+│⚝ ⃟🎖️❯ ⏰ *تذكير جديد!*
+│⚝ ⃟🧰❯ 📝 *المحتوى:* ${r.text}
+*╯ ───═┅─┅─┅═─── ╰*`;
+                await loopSock.sendMessage(target, { text: card });
                 reminders = reminders.filter((x) => x.id !== r.id);
                 saveReminders();
             } catch (e) {}
@@ -58,12 +65,8 @@ export function startReminderLoop(sock) {
 
 export async function weatherText(cityName) {
     try {
-        // استخدام API مباشر وسريع وموثوق للغاية بدعم كامل للغة العربية
         const url = `https://wttr.in/${encodeURIComponent(cityName)}?format=j1&lang=ar`;
-        const response = await axios.get(url, {
-            headers: { 'User-Agent': 'Mozilla/5.0' },
-            timeout: 10000
-        });
+        const response = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 10000 });
 
         const data = response.data;
         const current = data.current_condition[0];
@@ -77,15 +80,20 @@ export async function weatherText(cityName) {
         const maxTemp = today.maxtempC;
         const minTemp = today.mintempC;
 
-        return `🌤️ *حالة الطقس لمدينة (${cityName})*\n\n` +
-               `📌 *الحالة:* ${weatherDesc}\n` +
-               `🌡️ *الحرارة:* ${temp}°C (الشعور الحقيقي: ${feelsLike}°C)\n` +
-               `🔺 *العظمى:* ${maxTemp}°C | 🔻 *الصغرى:* ${minTemp}°C\n` +
-               `💧 *الرطوبة:* ${humidity}%\n` +
-               `💨 *سرعة الرياح:* ${wind} كم/س`;
+        return `╮───────────────╭ـ
+│「❥📲 **حالة الطقس** 📃❥」
+│───────────────╰ـ
+*╮ ───═┅─┅─┅═─── ╭*
+│⚝ ⃟🎖️❯ 🌤️ *مدينة:* ${cityName}
+│⚝ ⃟🧰❯ 📌 *الحالة:* ${weatherDesc}
+│⚝ ⃟⚓❯ 🌡️ *الحرارة:* ${temp}°C (الملموسة: ${feelsLike}°C)
+│⚝ ⃟💎❯ 🔺 *العظمى:* ${maxTemp}°C | 🔻 *الصغرى:* ${minTemp}°C
+│⚝ ⃟👾❯ 💧 *الرطوبة:* ${humidity}%
+│⚝ ⃟🪙❯ 💨 *الرياح:* ${wind} كم/س
+*╯ ───═┅─┅─┅═─── ╰*`;
 
     } catch (e) {
-        return `❌ تعذر جلب معلومات الطقس لمدينة "${cityName}" حالياً. التأكد من اسم المدينة وحاول مجدداً.`;
+        return `❌ تعذر جلب معلومات الطقس لمدينة "${cityName}" حالياً.`;
     }
 }
 
@@ -106,7 +114,17 @@ export async function handleRemindersAndWeather(sock, msg, jid, text) {
         }
         reminders.push({ id: `${Date.now()}${Math.floor(Math.random() * 1000)}`, ts: parsed.ts, text: parsed.text, jid });
         saveReminders();
-        await sock.sendMessage(jid, { text: `✅ تم ضبط التذكير بنجاح\n📝 ${parsed.text}\n🕒 ${fmtWhen(parsed.ts)}` }, { quoted: msg });
+
+        const card = `╮───────────────╭ـ
+│「❥📲 **تم ضبط التذكير** 📃❥」
+│───────────────╰ـ
+*╮ ───═┅─┅─┅═─── ╭*
+│⚝ ⃟🎖️❯ ✅ *تم الضبط بنجاح*
+│⚝ ⃟🧰❯ 📝 *التذكير:* ${parsed.text}
+│⚝ ⃟⚓❯ 🕒 *الوقت:* ${fmtWhen(parsed.ts)}
+*╯ ───═┅─┅─┅═─── ╰*`;
+
+        await sock.sendMessage(jid, { text: card }, { quoted: msg });
         return true;
     }
 
@@ -115,8 +133,14 @@ export async function handleRemindersAndWeather(sock, msg, jid, text) {
         if (!list.length) {
             await sock.sendMessage(jid, { text: '📭 لا توجد لديك تذكيرات نشطة حالياً.' }, { quoted: msg });
         } else {
-            const lines = list.map((r, i) => `${i + 1}. ${r.text}\n   🕒 ${fmtWhen(r.ts)}`);
-            await sock.sendMessage(jid, { text: `⏰ *قائمة تذكيراتك:*\n\n${lines.join('\n\n')}` }, { quoted: msg });
+            const lines = list.map((r, i) => `│⚝ ⃟💎❯ ${i + 1}. ${r.text} (${fmtWhen(r.ts)})`).join('\n');
+            const card = `╮───────────────╭ـ
+│「❥📲 **قائمة تذكيراتك** 📃❥」
+│───────────────╰ـ
+*╮ ───═┅─┅─┅═─── ╭*
+${lines}
+*╯ ───═┅─┅─┅═─── ╰*`;
+            await sock.sendMessage(jid, { text: card }, { quoted: msg });
         }
         return true;
     }
