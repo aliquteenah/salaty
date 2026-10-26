@@ -14,15 +14,31 @@ import { quranTimers, sequentialQuranProgress, handleQuranCommands } from './fea
 import { handleHadithCommands, getRandomHadith } from './features/hadith.js';
 import { getPlace, getPrayerTimings, formatTimingsSchedule, startPrayerCheckLoop, handlePrayerCommands, makePrayerCard } from './features/prayer.js';
 
-// استيراد الميزات المفصولة الجديدة
+// استيراد الميزات المفصولة الجديدة مع دالة الاستعادة الذكية للحصن التلقائي
 import { handleQuranTafseerCommands } from './features/quranTafseer.js';
 import { handleDuaCommands } from './features/duas.js';
-import { handleHisnCommands } from './features/hisnMuslim.js';
+import { handleHisnCommands, restoreAutoHisnSubscribers } from './features/hisnMuslim.js';
 import { handleQuoteCommands } from './features/quotes.js';
 import { handleThoughtCommands } from './features/thoughts.js';
 
+// معالجة استثناءات التشفير لتفادي توقف البوت عند ظهور أخطاء Bad MAC
+process.on('uncaughtException', (err) => {
+    if (err.message?.includes('Bad MAC') || err.message?.includes('Failed to decrypt')) {
+        console.log('⚠️ تم تجاوز خطأ فك تشفير جلسة قديمة.');
+        return;
+    }
+    console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    if (reason?.message?.includes('Bad MAC') || reason?.message?.includes('Failed to decrypt')) {
+        return;
+    }
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 const HELP_TEXT = `╮───────────────╭ـ
-│「❥📲 **قائمة الأوامر** 📃❥」
+│「❥📲 **قائمة الأوامر الشاملة** 📃❥」
 │───────────────╰ـ
 *╮ ───═┅─┅─┅═─── ╭*
 │⚝ ⃟🎖️❯ 🎙️ *.حامد نص* ➔ تحويل لـ صوت رجالي
@@ -35,10 +51,12 @@ const HELP_TEXT = `╮───────────────╭ـ
 │⚝ ⃟🎖️❯ 🎧 *صوت / قرآن* ➔ التلاوات الصوتية
 │⚝ ⃟🧰❯ 📖 *.آية* (أو *.آية 5د*) ➔ آيات مع التفسير
 │⚝ ⃟⚓❯ 🤲 *.دعاء* (أو *.دعاء 5د*) ➔ أدعية قرآنية
-│⚝ ⃟💎❯ 🛡️ *.حصن* (أو *.حصن 5د*) ➔ أذكار حصن المسلم
-│⚝ ⃟👾❯ 💡 *.حكمة* (أو *.حكمة 5د*) ➔ حكم واقتباسات
-│⚝ ⃟🪙❯ ✍️ *.خاطرة* (أو *.خاطرة 5د*) ➔ خواطر وأدب
-│⚝ ⃟🎟️❯ 📜 *حديث 2د* ➔ تذكير الأحاديث الدوري
+│⚝ ⃟💎❯ 🛡️ *.حصن* ➔ أذكار تناسب وقتك الحالي
+│⚝ ⃟👾❯ 🛡️ *.حصن تلقائي 30د* ➔ تفعيل الأذكار التلقائية على مدار 24س
+│⚝ ⃟🪙❯ 📜 *.حصن فهرس* ➔ عرض الأبواب والاختيار بالرقم
+│⚝ ⃟🎟️❯ 💡 *.حكمة* (أو *.حكمة 5د*) ➔ حكم واقتباسات
+│⚝ ⃟🎖️❯ ✍️ *.خاطرة* (أو *.خاطرة 5د*) ➔ خواطر وأدب
+│⚝ ⃟🧰❯ 📜 *حديث 2د* ➔ تذكير الأحاديث الدوري
 │⚝ ⃟⚓❯ 🛑 *إيقاف* ➔ إلغاء التنبيهات التلقائية
 *╯ ───═┅─┅─┅═─── ╰*`;
 
@@ -122,8 +140,11 @@ async function startBot() {
         } else if (connection === 'open') {
             console.log('✅ تم تسجيل الدخول بنجاح وتفعيل البوت بكافة ميزاته الشاملة!');
             await saveAuthToFirebase();
+            
+            // استعادة الجلسات والحلقات التلقائية
             startPrayerCheckLoop(sock, subscribers, hadithSubscribers);
             startReminderLoop(sock);
+            await restoreAutoHisnSubscribers(sock);
         }
     });
 
@@ -179,7 +200,7 @@ async function startBot() {
                 continue;
             }
 
-            // تنفيذ معالجات الميزات الجديدة المفصولة
+            // تنفيذ معالجات الميزات المفصولة
             if (await handleQuranTafseerCommands(sock, msg, targetJid, cleanText)) continue;
             if (await handleDuaCommands(sock, msg, targetJid, cleanText)) continue;
             if (await handleHisnCommands(sock, msg, targetJid, cleanText)) continue;
