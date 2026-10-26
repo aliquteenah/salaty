@@ -2,32 +2,19 @@ import axios from 'axios';
 
 const activeHisnTimers = {};
 
-// قائمة بأهم أبواب حصن المسلم وفهرس الأرقام
-const HISN_INDEX = [
-    { id: 1, name: "أذكار الاستيقاظ من النوم" },
-    { id: 9, name: "أذكار دخول الخلاء والخروج منه" },
-    { id: 25, name: "أذكار الخروج من المنزل والدخول إليه" },
-    { id: 27, name: "أذكار الذهاب إلى المسجد ودخوله الخروج منه" },
-    { id: 28, name: "أذكار الأذان" },
-    { id: 30, name: "دعاء الاستفتاح" },
-    { id: 31, name: "دعاء الركوع والسجود" },
-    { id: 35, name: "أذكار الصلاة والتأمين بعد الصلاة" },
-    { id: 40, name: "أذكار الصباح والمساء" },
-    { id: 50, name: "أذكار النوم والأحلام" },
-    { id: 55, name: "دعاء قنوت الوتر" },
-    { id: 60, name: "أذكار الهم والحزن والكرب" },
-    { id: 70, name: "دعاء للقاء العدو وذي السلطان" },
-    { id: 80, name: "دعاء من أصابته مصيبة" },
-    { id: 90, name: "دعاء السفر والركوب" },
-    { id: 100, name: "أذكار الطعام والشراب والضيف" }
-];
-
-// دالة جلب ذكر بباب محدد أو عشوائي
+// دالة جلب الذكر (سواء محدد برقم الباب أو عشوائي)
 async function sendHisnText(sock, from, categoryId = null) {
     try {
-        const categoryIds = [1, 9, 25, 27, 28, 30, 31, 35, 40, 50, 55, 60, 70, 80, 90, 100];
-        const selectedId = categoryId || categoryIds[Math.floor(Math.random() * categoryIds.length)];
+        let selectedId = categoryId;
         
+        // إذا لم يحدد المستخدم رقم باب، يتم جلب قائمة الأبواب واختيار باب عشوائي منها
+        if (!selectedId) {
+            const indexRes = await axios.get('https://www.hisnmuslim.com/api/ar/husn_ar.json', { timeout: 10000 });
+            const categories = indexRes.data['العربية'] || indexRes.data[Object.keys(indexRes.data)[0]];
+            const randomCategory = categories[Math.floor(Math.random() * categories.length)];
+            selectedId = randomCategory.id;
+        }
+
         const textRes = await axios.get(`https://www.hisnmuslim.com/api/ar/${selectedId}.json`, { timeout: 12000 });
         const categoryKey = Object.keys(textRes.data)[0];
         const azkarList = textRes.data[categoryKey];
@@ -41,7 +28,7 @@ async function sendHisnText(sock, from, categoryId = null) {
 │「❥📲 **حصن المسلم** 📃❥」
 │───────────────╰ـ
 *╮ ───═┅─┅─┅═─── ╭*
-│⚝ ⃟🎖️❯ 🛡️ *الباب:* ${categoryKey}
+│⚝ ⃟🎖️❯ 🛡️ *الباب (${selectedId}):* ${categoryKey}
 │⚝ ⃟🧰❯ 💬 *الذكر:*
 "${zikrText}"
 │⚝ ⃟⚓❯ 🔁 *التكرار:* ${repeatCount} مرة
@@ -53,37 +40,59 @@ async function sendHisnText(sock, from, categoryId = null) {
         }
     } catch (e) {
         console.error('Hisn Text API Error:', e.message);
-        await sock.sendMessage(from, { text: '❌ حدث خطأ أثناء جلب الأذكار.' });
+        await sock.sendMessage(from, { text: '❌ حدث خطأ أثناء جلب الأذكار. التأكد من رقم الباب.' });
     }
 }
 
-// دالة عرض الفهرس المصمم
-async function sendHisnIndex(sock, from, msg) {
-    let indexText = `╮───────────────╭ـ
-│「❥📲 **فهرس حصن المسلم** 📃❥」
+// دالة جلب وعرض الفهرس الكامل المباشر من API حصن المسلم
+async function sendHisnIndex(sock, from, msg, page = 1) {
+    try {
+        await sock.sendMessage(from, { react: { text: '📜', key: msg.key } });
+
+        const response = await axios.get('https://www.hisnmuslim.com/api/ar/husn_ar.json', { timeout: 10000 });
+        const categories = response.data['العربية'] || response.data[Object.keys(response.data)[0]];
+
+        const pageSize = 25; // عدد الأبواب في الرسالة الواحدة
+        const totalPages = Math.ceil(categories.length / pageSize);
+        const currentPage = Math.max(1, Math.min(page, totalPages));
+
+        const startIndex = (currentPage - 1) * pageSize;
+        const pageItems = categories.slice(startIndex, startIndex + pageSize);
+
+        let indexText = `╮───────────────╭ـ
+│「❥📲 **فهرس حصن المسلم (صفحة ${currentPage}/${totalPages})** 📃❥」
 │───────────────╰ـ
 *╮ ───═┅─┅─┅═─── ╭*\n`;
 
-    HISN_INDEX.forEach(item => {
-        indexText += `│⚝ ⃟💎❯ *[ .حصن ${item.id} ]* ➔ ${item.name}\n`;
-    });
+        pageItems.forEach(item => {
+            indexText += `│⚝ ⃟💎❯ *[ .حصن ${item.id} ]* ➔ ${item.TITLE}\n`;
+        });
 
-    indexText += `*╯ ───═┅─┅─┅═─── ╰*\n\n`;
-    indexText += `💡 *طريقة الاستخدام:*\n`;
-    indexText += `• لطلب باب معين: اكتب رقم الباب بعد الأمر (مثال: *.حصن 40* لجلب أذكار الصباح والمساء).\n`;
-    indexText += `• للتكرار الدوري: اكتب الوقت بالدقائق (مثال: *.حصن 10د*).\n`;
-    indexText += `• للإيقاف: اكتب *.حصن وقف*`;
+        indexText += `*╯ ───═┅─┅─┅═─── ╰*\n\n`;
+        indexText += `💡 *خيارات التنقل والطلب:*\n`;
+        if (currentPage < totalPages) {
+            indexText += `• للتنقل للصفحة التالية أرسل: *.حصن فهرس ${currentPage + 1}*\n`;
+        }
+        indexText += `• لطلب باب معين أرسل أمره (مثال: *.حصن 27* لجلب أذكار المسجد).\n`;
+        indexText += `• للتكرار الدوري: *.حصن 10د*\n`;
+        indexText += `• للإيقاف: *.حصن وقف*`;
 
-    await sock.sendMessage(from, { text: indexText }, { quoted: msg });
+        await sock.sendMessage(from, { text: indexText }, { quoted: msg });
+    } catch (e) {
+        console.error('Hisn Index API Error:', e.message);
+        await sock.sendMessage(from, { text: '❌ تعذر جلب الفهرس الكامل حالياً.' }, { quoted: msg });
+    }
 }
 
 export async function handleHisnCommands(sock, msg, from, cleanText) {
     if (cleanText.startsWith('.حصن') || cleanText.startsWith('.أذكار') || cleanText.startsWith('.اذكار')) {
         const args = cleanText.split(' ').slice(1).join('').trim();
 
-        // 1. طلب الفهرس
-        if (args === 'فهرس' || args === 'الفهرس' || args === 'أبواب' || args === 'ابواب') {
-            await sendHisnIndex(sock, from, msg);
+        // 1. طلب الفهرس (مع دعم الصفحات .حصن فهرس 2)
+        if (args.startsWith('فهرس') || args.startsWith('الفهرس') || args.startsWith('أبواب') || args.startsWith('ابواب')) {
+            const pageMatch = args.match(/\d+/);
+            const page = pageMatch ? parseInt(pageMatch[0]) : 1;
+            await sendHisnIndex(sock, from, msg, page);
             return true;
         }
 
@@ -99,13 +108,12 @@ export async function handleHisnCommands(sock, msg, from, cleanText) {
             return true;
         }
 
-        // 3. التكرار الدوري مع رقم الباب أو بدون رقم باب (مثال: .حصن 10د  أو .حصن 40 10د)
+        // 3. التكرار الدوري مع رقم الباب أو بدونه (مثال: .حصن 10د أو .حصn 27 10د)
         const matchMinutes = args.match(/(\d+)د/);
         if (matchMinutes) {
             const minutes = parseInt(matchMinutes[1]);
             if (minutes < 1) return true;
 
-            // كشف إذا حدد المستخدم رقم باب مع الدقائق
             const categoryMatch = args.match(/^(\d+)/);
             const categoryId = categoryMatch ? parseInt(categoryMatch[1]) : null;
 
@@ -118,7 +126,7 @@ export async function handleHisnCommands(sock, msg, from, cleanText) {
             return true;
         }
 
-        // 4. طلب باب محدد برقم الباب (مثال: .حصن 40)
+        // 4. طلب باب محدد برقم الباب المأخوذ من الفهرس (مثال: .حصن 27)
         const categoryNumber = parseInt(args);
         if (!isNaN(categoryNumber) && categoryNumber > 0) {
             await sock.sendMessage(from, { react: { text: '🛡️', key: msg.key } });
