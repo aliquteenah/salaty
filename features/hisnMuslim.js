@@ -4,10 +4,10 @@ import { ref, set, get, child, remove } from 'firebase/database';
 
 const activeHisnTimers = {};
 const hisnProgress = {};
-const autoHisnTimers = {};
+export const autoHisnSubscribers = new Map();
 
-// دالة تحديد الباب المناسب بناءً على توقيت مكة المكرمة (Asia/Riyadh)
-function getSmartCategoryByTime() {
+// دالة مصفوفة الأبواب الذكية حسب التوقيت المحلي لمكة المكرمة
+function getSmartCategoriesByTime() {
     const localHourStr = new Date().toLocaleTimeString('en-GB', { 
         timeZone: 'Asia/Riyadh', 
         hour: '2-digit', 
@@ -16,26 +16,38 @@ function getSmartCategoryByTime() {
     
     const currentHour = parseInt(localHourStr, 10);
 
+    // الفجر والصباح الباكر (من 4:00 ص إلى 7:00 ص)
     if (currentHour >= 4 && currentHour < 7) {
-        return 1; // أذكار الاستيقاظ
-    } else if (currentHour >= 7 && currentHour < 12) {
-        return 40; // أذكار الصباح
-    } else if (currentHour >= 12 && currentHour < 16.5) {
-        const midDayCategories = [25, 27, 35, 100];
-        return midDayCategories[Math.floor(Math.random() * midDayCategories.length)];
-    } else if (currentHour >= 16.5 && currentHour < 21) {
-        return 40; // أذكار المساء
-    } else {
-        const nightCategories = [50, 55, 60];
-        return nightCategories[Math.floor(Math.random() * nightCategories.length)]; // أذكار النوم
+        return [1, 28, 30, 31];
+    }
+    // الصباح (من 7:00 ص إلى 12:00 ظ)
+    else if (currentHour >= 7 && currentHour < 12) {
+        return [40, 25, 27, 9];
+    }
+    // الظهيرة والعصر (من 12:00 ظ إلى 4:30 م)
+    else if (currentHour >= 12 && currentHour < 16.5) {
+        return [25, 27, 35, 60, 70, 80, 90, 100];
+    }
+    // المساء (من 4:30 م إلى 9:00 م)
+    else if (currentHour >= 16.5 && currentHour < 21) {
+        return [40, 35, 28, 60];
+    }
+    // الليل والنوم (من 9:00 م إلى 4:00 ص)
+    else {
+        return [50, 55, 60, 30, 31];
     }
 }
 
-// دالة حفظ واستعادة الاشتراكات التلقائية في Firebase
-async function saveAutoHisnSubscribers(jid, minutes) {
+// دالة حفظ واستعادة الاشتراكات والتقدم في Firebase
+async function saveAutoHisnSubscribers(jid, minutes, categoryId = null, index = 0) {
     try {
         const safeJid = jid.replace(/\./g, '_DOT_');
-        await set(ref(db, `auto_hisn_subscribers/${safeJid}`), { minutes, updatedAt: Date.now() });
+        await set(ref(db, `auto_hisn_subscribers/${safeJid}`), { 
+            minutes, 
+            categoryId, 
+            index, 
+            updatedAt: Date.now() 
+        });
     } catch (e) {
         console.error('خطأ حفظ حصن تلقائي في Firebase:', e.message);
     }
@@ -58,7 +70,7 @@ export async function restoreAutoHisnSubscribers(sock) {
             const data = snapshot.val();
             for (const [safeJid, info] of Object.entries(data)) {
                 const jid = safeJid.replace(/_DOT_/g, '.');
-                startAutoTimer(sock, jid, info.minutes || 120, false);
+                startAutoTimer(sock, jid, info.minutes || 120, false, info.categoryId, info.index || 0);
             }
             console.log('✅ تم استعادة اشتراكات حصن المسلم التلقائية من Firebase بنجاح.');
         }
@@ -67,7 +79,7 @@ export async function restoreAutoHisnSubscribers(sock) {
     }
 }
 
-// دالة جلب الذكر ترتيبي أو عشوائي
+// دالة جلب وإرسال الذكر بالتتابع
 async function sendHisnSequentialText(sock, from, categoryId, index = 0) {
     try {
         const textRes = await axios.get(`https://www.hisnmuslim.com/api/ar/${categoryId}.json`, { timeout: 12000 });
@@ -75,8 +87,7 @@ async function sendHisnSequentialText(sock, from, categoryId, index = 0) {
         const azkarList = textRes.data[categoryKey];
 
         if (!azkarList || azkarList.length === 0) {
-            await sock.sendMessage(from, { text: '❌ لم يتم العثور على أذكار في هذا الباب حالياً.' });
-            return false;
+            return { isCompleted: true, azkarList: [] };
         }
 
         const currentIndex = index % azkarList.length;
@@ -97,37 +108,73 @@ async function sendHisnSequentialText(sock, from, categoryId, index = 0) {
 
         await sock.sendMessage(from, { text: cardText });
 
-        if (currentIndex + 1 >= azkarList.length) {
-            return true; 
-        }
-        return false; 
+        const isCompleted = (currentIndex + 1 >= azkarList.length);
+        return { isCompleted, total: azkarList.length };
     } catch (e) {
         console.error('Hisn Text API Error:', e.message);
-        return false;
+        return { isCompleted: false, error: true };
     }
 }
 
-// دالة إرسال التنبيه التلقائي الذكي
-export async function sendSmartAutoHisn(sock, from) {
-    const smartCategory = getSmartCategoryByTime();
-    await sendHisnSequentialText(sock, from, smartCategory, Math.floor(Math.random() * 5));
+// دالة المحرك التلقائي الذهبي للمتابعة بين الأبواب
+export async function processAutoHisnStep(sock, from) {
+    let state = autoHisnSubscribers.get(from) || {};
+    
+    // إذا لم يحدد باب، نختار باباً مناسباً لوقت مكة المكرمة
+    if (!state.categoryId) {
+        const categories = getSmartCategoriesByTime();
+        state.categoryId = categories[Math.floor(Math.random() * categories.length)];
+        state.index = 0;
+    }
+
+    const result = await sendHisnSequentialText(sock, from, state.categoryId, state.index);
+
+    if (result.isCompleted) {
+        // إذا اكتمل الباب الحالي، نختار الباب التالي لمواصلة السلسلة
+        const categories = getSmartCategoriesByTime();
+        let nextCategory = categories[Math.floor(Math.random() * categories.length)];
+        
+        // تجنب اختيار نفس الباب فوراً إن أمكن
+        if (categories.length > 1 && nextCategory === state.categoryId) {
+            nextCategory = categories.find(c => c !== state.categoryId) || nextCategory;
+        }
+
+        state.categoryId = nextCategory;
+        state.index = 0;
+    } else if (!result.error) {
+        // الانقال للذكر التالي داخل نفس الباب
+        state.index++;
+    }
+
+    autoHisnSubscribers.set(from, state);
+    await saveAutoHisnSubscribers(from, state.minutes, state.categoryId, state.index);
 }
 
-// دالة بدء التكرار الدوري التلقائي
-function startAutoTimer(sock, from, minutes, sendInitial = true) {
+// دالة بدء التكرار التلقائي الدوري
+function startAutoTimer(sock, from, minutes, sendInitial = true, initialCategory = null, initialIndex = 0) {
     if (autoHisnTimers[from]) clearInterval(autoHisnTimers[from]);
 
+    const state = {
+        minutes,
+        categoryId: initialCategory,
+        index: initialIndex
+    };
+    autoHisnSubscribers.set(from, state);
+
     if (sendInitial) {
-        sendSmartAutoHisn(sock, from).catch(() => {});
+        processAutoHisnStep(sock, from).catch(() => {});
     }
 
     autoHisnTimers[from] = setInterval(async () => {
         try {
-            await sendSmartAutoHisn(sock, from);
+            await processAutoHisnStep(sock, from);
         } catch (e) {
             console.error('خطأ إرسال الحصن التلقائي:', e.message);
         }
     }, minutes * 60 * 1000);
+
+    state.timer = autoHisnTimers[from];
+    autoHisnSubscribers.set(from, state);
 }
 
 // دالة عرض الفهرس المعالجة
@@ -157,7 +204,7 @@ async function sendHisnIndex(sock, from, msg, page = 1) {
 
         indexText += `*╯ ───═┅─┅─┅═─── ╰*\n\n`;
         indexText += `💡 *خيارات التفعيل والطلب:*\n`;
-        indexText += `• للتفعيل التلقائي الذكي: أرسل *.حصن تلقائي* (أو تخصيص وقت: *.حصن تلقائي 30د*)\n`;
+        indexText += `• للتفعيل التلقائي المتسلسل: أرسل *.حصن تلقائي* (أو *.حصن تلقائي 30د*)\n`;
         indexText += `• لطلب أذكار باب معين بالتتابع: أرسل رقم الباب والدقائق (مثال: *.حصن 1 2د*).\n`;
         indexText += `• لإيقاف التكرار: أرسل *.حصن وقف*`;
 
@@ -172,17 +219,16 @@ export async function handleHisnCommands(sock, msg, from, cleanText) {
     if (cleanText.startsWith('.حصن') || cleanText.startsWith('.أذكار') || cleanText.startsWith('.اذكار')) {
         const args = cleanText.split(' ').slice(1).join(' ').trim();
 
-        // 1. ميزة التفعيل التلقائي الذكي (.حصن تلقائي 30د)
+        // 1. ميزة التفعيل التلقائي الذكي المتسلسل (.حصن تلقائي 30د)
         if (args.startsWith('تلقائي') || args.startsWith('تلقائى') || args.startsWith('الآلي') || args.startsWith('الي')) {
             const matchMinutes = args.match(/(\d+)د/);
             const minutes = matchMinutes ? parseInt(matchMinutes[1], 10) : 120;
 
-            await saveAutoHisnSubscribers(from, minutes);
             startAutoTimer(sock, from, minutes, true);
 
             await sock.sendMessage(from, { react: { text: '🔄', key: msg.key } });
             await sock.sendMessage(from, { 
-                text: `✅ *تم تفعيل خدمة "حصن المسلم التلقائي" بنجاح!* 🌙✨\n\nسيتم إرسال أذكار مناسبة لوقتك بتوقيت مكة المكرمة تلقائياً كل *${minutes}* دقيقة على مدار الساعة دون توقف حتى لو عاد البوت من الخمول.\n\n🛑 لإيقاف الخدمة أرسل: *.حصن وقف*` 
+                text: `✅ *تم تفعيل خدمة "حصن المسلم التلقائي المتسلسل" بنجاح!* 🌙✨\n\nسيتم إرسال أذكار الباب بالترتيب حتى يكتمَل بالكامل، ثم ينتقل تلقائياً للباب التالي حسب توقيتك كل *${minutes}* دقيقة دون توقف.\n\n🛑 لإيقاف الخدمة أرسل: *.حصن وقف*` 
             }, { quoted: msg });
 
             return true;
@@ -207,8 +253,10 @@ export async function handleHisnCommands(sock, msg, from, cleanText) {
                 stopped = true;
             }
 
-            if (autoHisnTimers[from]) {
-                clearInterval(autoHisnTimers[from]);
+            if (autoHisnSubscribers.has(from)) {
+                const state = autoHisnSubscribers.get(from);
+                if (state && state.timer) clearInterval(state.timer);
+                autoHisnSubscribers.delete(from);
                 delete autoHisnTimers[from];
                 await removeAutoHisnSubscriber(from);
                 stopped = true;
@@ -238,8 +286,8 @@ export async function handleHisnCommands(sock, msg, from, cleanText) {
             await sock.sendMessage(from, { react: { text: '⏰', key: msg.key } });
             await sock.sendMessage(from, { text: `✅ تم تفعيل إرسال أذكار الباب رقم (${categoryId}) بالتتابع كل *${minutes}* دقيقة حتى اكتمال الأذكار.` }, { quoted: msg });
 
-            const isCompletedFirst = await sendHisnSequentialText(sock, from, categoryId, 0);
-            if (isCompletedFirst) {
+            const firstRes = await sendHisnSequentialText(sock, from, categoryId, 0);
+            if (firstRes.isCompleted) {
                 await sock.sendMessage(from, { text: `🎉 *تمت بحمد الله قراءة جميع أذكار هذا الباب بالكامل.*` });
                 return true;
             }
@@ -250,9 +298,9 @@ export async function handleHisnCommands(sock, msg, from, cleanText) {
                 const prog = hisnProgress[from];
                 if (!prog) return;
 
-                const isCompleted = await sendHisnSequentialText(sock, from, prog.categoryId, prog.currentIndex);
+                const res = await sendHisnSequentialText(sock, from, prog.categoryId, prog.currentIndex);
 
-                if (isCompleted) {
+                if (res.isCompleted) {
                     clearInterval(activeHisnTimers[from]);
                     delete activeHisnTimers[from];
                     delete hisnProgress[from];
@@ -275,7 +323,7 @@ export async function handleHisnCommands(sock, msg, from, cleanText) {
 
         // 6. طلب عشوائي عند كتابة (.حصن) فقط
         await sock.sendMessage(from, { react: { text: '🛡️', key: msg.key } });
-        await sendHisnSequentialText(sock, from, getSmartCategoryByTime(), 0);
+        await processAutoHisnStep(sock, from);
         return true;
     }
     return false;
